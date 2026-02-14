@@ -1,0 +1,804 @@
+#!/usr/bin/env python3
+"""
+Map Editor — draw obstacles on a grid, place goal points.
+Requires:  pip install pygame
+
+Each grid cell is exactly 0.05 m (5 cm) and is indivisible.
+When zooming out, cells are merged in powers of 2 (2x2, 4x4, 8x8 ...)
+so the display always shows whole cells — never sub-cell rendering.
+
+Controls:
+  LMB drag        -> paint obstacles           (Draw mode)
+  RMB drag        -> erase obstacles           (Draw mode)
+  LMB click       -> place goal               (Goal mode)
+  RMB click       -> remove nearest goal      (Goal mode)
+  MMB drag        -> pan camera
+  Alt+LMB drag    -> pan camera (laptop-friendly)
+  Scroll wheel    -> zoom in / out
+  Tab             -> toggle Draw / Goal mode
+  [ / ]           -> shrink / grow brush
+  Ctrl+Z          -> undo
+  Ctrl+Y          -> redo
+  S               -> save  (quick-save if file known, else prompts)
+  Ctrl+S          -> save-as (always prompts)
+  L               -> load (prompts for filename)
+  R               -> reset view to origin
+  Delete          -> clear all
+"""
+
+import math, json, os, sys
+import pygame
+import argparse
+
+
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG_COLOR       = (248, 248, 252)
+GRID_MINOR     = (215, 215, 230)
+GRID_MAJOR     = (165, 165, 190)
+GRID_SUPER     = (120, 120, 155)
+AXIS_COLOR     = (120, 120, 155)
+OBSTACLE_COLOR = ( 42,  45,  68)
+GOAL_FILL      = (240,  65,  65)
+GOAL_RING      = (170,   0,   0)
+PANEL_BG       = ( 32,  36,  48)
+PANEL_FG       = (218, 224, 238)
+PANEL_DIM      = (110, 118, 140)
+PANEL_SEP      = ( 55,  62,  78)
+BTN_ACTIVE     = ( 72, 136, 255)
+BTN_IDLE       = ( 58,  64,  82)
+BTN_HOVER      = ( 80,  88, 110)
+BRUSH_DRAW     = ( 72, 108, 230, 100)
+BRUSH_ERASE    = (230,  72,  72, 100)
+SCALE_COL      = ( 55,  58,  80)
+
+DIALOG_BG      = ( 22,  26,  38)
+DIALOG_BORDER  = ( 72, 136, 255)
+DIALOG_INPUT   = ( 38,  44,  60)
+DIALOG_CURSOR  = (160, 200, 255)
+DIALOG_OK      = ( 60, 160,  80)
+DIALOG_CANCEL  = (160,  60,  60)
+DIALOG_ERR     = (220,  80,  80)
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+PANEL_W      = 240
+CELL_M       = 0.05
+MIN_PPM      = 0.5
+MAX_PPM      = 8000.0
+DEFAULT_PPM  = 200.0
+MIN_CELL_PX  = 4
+MAJOR_EVERY  = 10
+SUPER_EVERY  = 100
+MODE_DRAW    = "draw"
+MODE_GOAL    = "goal"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-pygame file dialog
+# ─────────────────────────────────────────────────────────────────────────────
+class FileDialog:
+    """
+    Blocking modal text-entry dialog drawn directly onto the pygame surface.
+    Call FileDialog.ask(...) which spins its own mini event loop and returns
+    a string (the typed path) or None if cancelled.
+    """
+
+    @staticmethod
+    def ask(screen, font_m, font_s, title="Enter filename",
+            initial="", error=""):
+        """
+        Runs a modal input loop.  Returns the entered string or None.
+        """
+        clock   = pygame.time.Clock()
+        text    = initial
+        cursor_on    = True
+        cursor_timer = 0
+        err_msg = error
+
+        SW, SH = screen.get_size()
+        W, H   = min(620, SW - 40), 200
+        x      = (SW - W) // 2
+        y      = (SH - H) // 2
+
+        # Button rects (local coords inside dialog)
+        ok_rect     = pygame.Rect(W - 190, H - 52, 82, 34)
+        cancel_rect = pygame.Rect(W -  98, H - 52, 82, 34)
+        input_rect  = pygame.Rect(16, 80, W - 32, 36)
+
+        while True:
+            clock.tick(60)
+            cursor_timer += 1
+            if cursor_timer >= 30:
+                cursor_on    = not cursor_on
+                cursor_timer = 0
+
+            # ── Draw overlay ────────────────────────────────────────────────
+            overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 160))
+            screen.blit(overlay, (0, 0))
+
+            # Dialog box
+            box = pygame.Rect(x, y, W, H)
+            pygame.draw.rect(screen, DIALOG_BG, box, border_radius=12)
+            pygame.draw.rect(screen, DIALOG_BORDER, box, 2, border_radius=12)
+
+            # Title
+            t = font_m.render(title, True, PANEL_FG)
+            screen.blit(t, (x + 16, y + 16))
+
+            # Hint
+            h = font_s.render("Press Enter to confirm, Esc to cancel", True, PANEL_DIM)
+            screen.blit(h, (x + 16, y + 46))
+
+            # Input box
+            ib = input_rect.move(x, y)
+            pygame.draw.rect(screen, DIALOG_INPUT, ib, border_radius=6)
+            pygame.draw.rect(screen, DIALOG_BORDER, ib, 1, border_radius=6)
+
+            # Clip text to fit box width
+            max_w   = ib.width - 20
+            display = text
+            while font_s.size(display)[0] > max_w and display:
+                display = display[1:]
+
+            txt_surf = font_s.render(display, True, PANEL_FG)
+            screen.blit(txt_surf, (ib.x + 8, ib.y + 10))
+
+            # Cursor
+            if cursor_on:
+                cx = ib.x + 8 + font_s.size(display)[0]
+                pygame.draw.line(screen, DIALOG_CURSOR,
+                                 (cx, ib.y + 8), (cx, ib.y + 26), 2)
+
+            # Error message
+            if err_msg:
+                e = font_s.render(err_msg, True, DIALOG_ERR)
+                screen.blit(e, (x + 16, y + 122))
+
+            # Buttons
+            mx, my = pygame.mouse.get_pos()
+
+            def btn(rect_local, label, base_col):
+                r = rect_local.move(x, y)
+                hover = r.collidepoint(mx, my)
+                col   = tuple(min(255, c + 30) for c in base_col) if hover else base_col
+                pygame.draw.rect(screen, col, r, border_radius=7)
+                s = font_s.render(label, True, (240, 240, 240))
+                screen.blit(s, s.get_rect(center=r.center))
+                return r
+
+            ok_r     = btn(ok_rect,     "OK",     DIALOG_OK)
+            cancel_r = btn(cancel_rect, "Cancel", DIALOG_CANCEL)
+
+            pygame.display.flip()
+
+            # ── Events ──────────────────────────────────────────────────────
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit(); sys.exit(0)
+
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    elif event.key == pygame.K_RETURN:
+                        result = text.strip()
+                        return result if result else None
+                    elif event.key == pygame.K_BACKSPACE:
+                        text = text[:-1]
+                        err_msg = ""
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable():
+                            text   += ch
+                            err_msg = ""
+
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if ok_r.collidepoint(event.pos):
+                        result = text.strip()
+                        return result if result else None
+                    elif cancel_r.collidepoint(event.pos):
+                        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Button widget
+# ─────────────────────────────────────────────────────────────────────────────
+class Button:
+    def __init__(self, rect, label, active=False, color_active=None):
+        self.rect        = pygame.Rect(rect)
+        self.label       = label
+        self.active      = active
+        self.hover       = False
+        self._col_active = color_active or BTN_ACTIVE
+
+    def draw(self, surf, font):
+        col = self._col_active if self.active else (BTN_HOVER if self.hover else BTN_IDLE)
+        pygame.draw.rect(surf, col, self.rect, border_radius=7)
+        txt = font.render(self.label, True, PANEL_FG)
+        surf.blit(txt, txt.get_rect(center=self.rect.center))
+
+    def update(self, mpos): self.hover = self.rect.collidepoint(mpos)
+    def hit(self, ev):
+        return (ev.type == pygame.MOUSEBUTTONDOWN
+                and ev.button == 1
+                and self.rect.collidepoint(ev.pos))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main editor
+# ─────────────────────────────────────────────────────────────────────────────
+class MapEditor:
+    def __init__(self, width=1340, height=820):
+        pygame.init()
+        self.W, self.H = width, height
+        self.canvas_W  = self.W - PANEL_W
+        self.screen    = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
+        pygame.display.set_caption("Map Editor  |  5 cm / cell")
+
+        self.font_s = pygame.font.SysFont("monospace", 13)
+        self.font_m = pygame.font.SysFont("monospace", 15, bold=True)
+        self.font_l = pygame.font.SysFont("monospace", 18, bold=True)
+        self.clock  = pygame.time.Clock()
+
+        self.obstacles: set  = set()   # base (row, col) integer indices
+        self.goals: list     = []      # world metres (x, y)
+
+        self.ppm   = DEFAULT_PPM
+        self.cam_x = 0.0
+        self.cam_y = 0.0
+
+        self.mode          = MODE_DRAW
+        self.brush_cells   = 1
+        self.drawing       = False
+        self.erasing       = False
+        self.panning       = False
+        self.pan_start     = (0, 0)
+        self.pan_cam_orig  = (0.0, 0.0)
+        self.current_file  = None
+        self.status_msg    = ""
+        self.status_timer  = 0
+
+        # Undo / redo stacks — each entry is (frozenset_obstacles, tuple_goals)
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+        self._MAX_HISTORY = 64
+
+        self._build_ui()
+
+    # ── LOD ────────────────────────────────────────────────────────────────────
+    def _lod(self):
+        level = 0
+        while CELL_M * (2 ** level) * self.ppm < MIN_CELL_PX:
+            level += 1
+        return level, 2 ** level
+
+    # ── Coordinates ────────────────────────────────────────────────────────────
+    def screen_to_world(self, sx, sy):
+        return (self.cam_x + (sx - self.canvas_W / 2) / self.ppm,
+                self.cam_y + (sy - self.H / 2)        / self.ppm)
+
+    def world_to_screen(self, wx, wy):
+        return ((wx - self.cam_x) * self.ppm + self.canvas_W / 2,
+                (wy - self.cam_y) * self.ppm + self.H        / 2)
+
+    def world_to_base_cell(self, wx, wy):
+        return (int(math.floor(wy / CELL_M)),
+                int(math.floor(wx / CELL_M)))
+
+    # ── Edit operations ────────────────────────────────────────────────────────
+    def paint(self, sx, sy, erase=False):
+        wx, wy = self.screen_to_world(sx, sy)
+        cr, cc = self.world_to_base_cell(wx, wy)
+        r = self.brush_cells
+        for dr in range(-r, r + 1):
+            for dc in range(-r, r + 1):
+                if dr * dr + dc * dc <= r * r:
+                    key = (cr + dr, cc + dc)
+                    self.obstacles.discard(key) if erase else self.obstacles.add(key)
+
+    def place_goal(self, sx, sy):
+        wx, wy = self.screen_to_world(sx, sy)
+        self.goals.append((wx, wy))
+
+    def remove_nearest_goal(self, sx, sy):
+        if not self.goals: return
+        wx, wy    = self.screen_to_world(sx, sy)
+        threshold = 25 / self.ppm
+        idx = min(range(len(self.goals)),
+                  key=lambda i: (self.goals[i][0]-wx)**2 + (self.goals[i][1]-wy)**2)
+        if math.hypot(self.goals[idx][0]-wx, self.goals[idx][1]-wy) <= threshold:
+            self.goals.pop(idx)
+
+    # ── Zoom ────────────────────────────────────────────────────────────────────
+    def zoom(self, direction, pivot_sx, pivot_sy):
+        wx0, wy0 = self.screen_to_world(pivot_sx, pivot_sy)
+        self.ppm  = max(MIN_PPM, min(MAX_PPM, self.ppm * (1.18 if direction > 0 else 1/1.18)))
+        wx1, wy1  = self.screen_to_world(pivot_sx, pivot_sy)
+        self.cam_x += wx0 - wx1
+        self.cam_y += wy0 - wy1
+
+    # ── File I/O ────────────────────────────────────────────────────────────────
+    def _ensure_json_ext(self, path):
+        if path and not path.lower().endswith(".json"):
+            path += ".json"
+        return path
+
+    def save(self, path=None, force_dialog=False):
+        if path is None or force_dialog:
+            initial = os.path.basename(path or self.current_file or "map.json")
+            path = FileDialog.ask(
+                self.screen, self.font_m, self.font_s,
+                title="Save map — enter filename",
+                initial=initial)
+            if path is None:
+                return
+            path = self._ensure_json_ext(path)
+
+        try:
+            data = {
+                "cell_m":    CELL_M,
+                "obstacles": [list(o) for o in self.obstacles],
+                "goals":     [list(g) for g in self.goals],
+            }
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+            self.current_file = path
+            self._status(f"Saved -> {os.path.basename(path)}")
+        except OSError as e:
+            # Show error inside the dialog and let user retry with corrected path
+            new_path = FileDialog.ask(
+                self.screen, self.font_m, self.font_s,
+                title="Save map — enter filename",
+                initial=path,
+                error=f"Error: {e}")
+            if new_path:
+                self.save(self._ensure_json_ext(new_path))
+
+    def load(self, path=None):
+        if path is None:
+            path = FileDialog.ask(
+                self.screen, self.font_m, self.font_s,
+                title="Load map — enter filename",
+                initial=os.path.basename(self.current_file or "map.json"))
+            if path is None:
+                return
+            path = self._ensure_json_ext(path)
+
+        if not os.path.isfile(path):
+            new_path = FileDialog.ask(
+                self.screen, self.font_m, self.font_s,
+                title="Load map — enter filename",
+                initial=path,
+                error=f"File not found: {path}")
+            if new_path:
+                self.load(self._ensure_json_ext(new_path))
+            return
+
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception as e:
+            FileDialog.ask(
+                self.screen, self.font_m, self.font_s,
+                title="Load failed — press Esc to close",
+                initial="",
+                error=str(e))
+            return
+
+        saved_cm = float(data.get("cell_m", CELL_M))
+        scale    = max(1, round(saved_cm / CELL_M))
+
+        self.obstacles = set()
+        for o in data.get("obstacles", []):
+            r0, c0 = int(o[0]), int(o[1])
+            for dr in range(scale):
+                for dc in range(scale):
+                    self.obstacles.add((r0*scale + dr, c0*scale + dc))
+
+        self.goals        = [tuple(g) for g in data.get("goals", [])]
+        self.current_file = path
+        self._status(f"Loaded <- {os.path.basename(path)}")
+
+    def _status(self, msg, secs=3.0):
+        self.status_msg   = msg
+        self.status_timer = int(secs * 60)
+
+    # ── Undo / redo ─────────────────────────────────────────────────────────────
+    def _push_history(self):
+        """Save current state onto the undo stack and clear the redo stack."""
+        entry = (frozenset(self.obstacles), tuple(self.goals))
+        if self._undo_stack and self._undo_stack[-1] == entry:
+            return  # nothing changed — don't create a duplicate entry
+        self._undo_stack.append(entry)
+        if len(self._undo_stack) > self._MAX_HISTORY:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def _restore(self, entry):
+        obs, goals = entry
+        self.obstacles = set(obs)
+        self.goals     = list(goals)
+
+    def undo(self):
+        if not self._undo_stack:
+            self._status("Nothing to undo.", 1.5); return
+        current = (frozenset(self.obstacles), tuple(self.goals))
+        self._redo_stack.append(current)
+        self._restore(self._undo_stack.pop())
+        self._status("Undo", 1.0)
+
+    def redo(self):
+        if not self._redo_stack:
+            self._status("Nothing to redo.", 1.5); return
+        current = (frozenset(self.obstacles), tuple(self.goals))
+        self._undo_stack.append(current)
+        self._restore(self._redo_stack.pop())
+        self._status("Redo", 1.0)
+
+    # ── Rendering ───────────────────────────────────────────────────────────────
+    def draw(self):
+        self.screen.fill(BG_COLOR)
+        self._draw_grid()
+        self._draw_obstacles()
+        self._draw_goals()
+        self._draw_brush_preview()
+        self._draw_scale_bar()
+        self._draw_coords_lod()
+        self._draw_status()
+        self._draw_panel()
+        pygame.display.flip()
+
+    def _draw_grid(self):
+        level, block = self._lod()
+        dcm  = CELL_M * block
+        dcpx = dcm * self.ppm
+
+        wx0, wy0 = self.screen_to_world(0, 0)
+        wx1, wy1 = self.screen_to_world(self.canvas_W, self.H)
+        dc0 = int(math.floor(wx0 / dcm)) - 1
+        dc1 = int(math.ceil (wx1 / dcm)) + 1
+        dr0 = int(math.floor(wy0 / dcm)) - 1
+        dr1 = int(math.ceil (wy1 / dcm)) + 1
+
+        if dcpx >= 3:
+            for dci in range(dc0, dc1 + 1):
+                sx = int(self.world_to_screen(dci * dcm, 0)[0])
+                bc = dci * block
+                col, w = ((GRID_SUPER, 2) if bc % SUPER_EVERY == 0 else
+                          (GRID_MAJOR, 1) if dci % MAJOR_EVERY == 0 else
+                          (GRID_MINOR, 1))
+                pygame.draw.line(self.screen, col, (sx, 0), (sx, self.H), w)
+
+            for dri in range(dr0, dr1 + 1):
+                sy = int(self.world_to_screen(0, dri * dcm)[1])
+                br = dri * block
+                col, w = ((GRID_SUPER, 2) if br % SUPER_EVERY == 0 else
+                          (GRID_MAJOR, 1) if dri % MAJOR_EVERY == 0 else
+                          (GRID_MINOR, 1))
+                pygame.draw.line(self.screen, col, (0, sy), (self.canvas_W, sy), w)
+
+        ox, oy = self.world_to_screen(0, 0)
+        if 0 <= ox <= self.canvas_W:
+            pygame.draw.line(self.screen, AXIS_COLOR, (int(ox), 0), (int(ox), self.H), 2)
+        if 0 <= oy <= self.H:
+            pygame.draw.line(self.screen, AXIS_COLOR, (0, int(oy)), (self.canvas_W, int(oy)), 2)
+
+    def _draw_obstacles(self):
+        if not self.obstacles: return
+        level, block = self._lod()
+        dcm  = CELL_M * block
+        dcpx = dcm * self.ppm
+        cs   = math.ceil(dcpx) + 1
+
+        wx0, wy0 = self.screen_to_world(0, 0)
+        wx1, wy1 = self.screen_to_world(self.canvas_W, self.H)
+        dc0 = int(math.floor(wx0 / dcm)) - 1
+        dc1 = int(math.ceil (wx1 / dcm)) + 1
+        dr0 = int(math.floor(wy0 / dcm)) - 1
+        dr1 = int(math.ceil (wy1 / dcm)) + 1
+
+        visible: set = set()
+        for (r, c) in self.obstacles:
+            dr, dc = r // block, c // block
+            if dr0 <= dr <= dr1 and dc0 <= dc <= dc1:
+                visible.add((dr, dc))
+
+        for (dr, dc) in visible:
+            sx, sy = self.world_to_screen(dc * dcm, dr * dcm)
+            pygame.draw.rect(self.screen, OBSTACLE_COLOR, (int(sx), int(sy), cs, cs))
+
+    def _draw_goals(self):
+        r_px = max(7, min(26, CELL_M * 1.0 * self.ppm))
+        ri   = int(r_px)
+        for gx, gy in self.goals:
+            sx, sy = self.world_to_screen(gx, gy)
+            si, sj = int(sx), int(sy)
+            if -ri <= si <= self.canvas_W + ri and -ri <= sj <= self.H + ri:
+                pygame.draw.circle(self.screen, GOAL_FILL, (si, sj), ri)
+                pygame.draw.circle(self.screen, GOAL_RING, (si, sj), ri, 2)
+                pygame.draw.line(self.screen, GOAL_RING, (si-ri, sj), (si+ri, sj), 2)
+                pygame.draw.line(self.screen, GOAL_RING, (si, sj-ri), (si, sj+ri), 2)
+
+    def _draw_brush_preview(self):
+        mx, my = pygame.mouse.get_pos()
+        if mx >= self.canvas_W: return
+        if self.mode == MODE_DRAW:
+            r_px = max(2, int((self.brush_cells + 0.5) * CELL_M * self.ppm))
+            col  = BRUSH_ERASE if self.erasing else BRUSH_DRAW
+            surf = pygame.Surface((r_px*2+4, r_px*2+4), pygame.SRCALPHA)
+            pygame.draw.circle(surf, col, (r_px+2, r_px+2), r_px)
+            self.screen.blit(surf, (mx-r_px-2, my-r_px-2))
+            pygame.draw.circle(self.screen,
+                               (200,60,60) if self.erasing else (60,80,200),
+                               (mx, my), r_px, 1)
+        else:
+            ri = max(7, min(26, int(CELL_M * self.ppm)))
+            pygame.draw.circle(self.screen, GOAL_FILL, (mx, my), ri, 2)
+            pygame.draw.line(self.screen, GOAL_FILL, (mx-ri, my), (mx+ri, my), 1)
+            pygame.draw.line(self.screen, GOAL_FILL, (mx, my-ri), (mx, my+ri), 1)
+
+    def _draw_scale_bar(self):
+        target_px  = 160
+        world_span = target_px / self.ppm
+        magnitude  = 10 ** math.floor(math.log10(max(world_span, 1e-9)))
+        nice_vals  = [0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000]
+        world_len  = magnitude
+        for v in nice_vals:
+            if v * magnitude >= world_span * 0.4:
+                world_len = v * magnitude; break
+        bar_px = int(world_len * self.ppm)
+        bx, by = 18, self.H - 38
+        pygame.draw.rect(self.screen, SCALE_COL, (bx, by, bar_px, 5))
+        pygame.draw.line(self.screen, SCALE_COL, (bx, by-5), (bx, by+10), 2)
+        pygame.draw.line(self.screen, SCALE_COL, (bx+bar_px, by-5), (bx+bar_px, by+10), 2)
+        if world_len >= 1:   label = f"{world_len:.4g} m"
+        elif world_len >= 0.01: label = f"{world_len*100:.4g} cm"
+        else:                label = f"{world_len*1000:.4g} mm"
+        txt = self.font_s.render(label, True, SCALE_COL)
+        self.screen.blit(txt, (bx + bar_px//2 - txt.get_width()//2, by+12))
+
+    def _draw_coords_lod(self):
+        level, block = self._lod()
+        mx, my = pygame.mouse.get_pos()
+        if mx < self.canvas_W:
+            wx, wy = self.screen_to_world(mx, my)
+            br, bc = self.world_to_base_cell(wx, wy)
+            txt = self.font_s.render(
+                f"({wx:+.4f}, {wy:+.4f}) m   cell ({br}, {bc})   LOD {level} ({block}x{block})",
+                True, SCALE_COL)
+            self.screen.blit(txt, (18, self.H - 60))
+
+    def _draw_status(self):
+        if self.status_timer > 0:
+            self.status_timer -= 1
+            surf = self.font_s.render(self.status_msg, True, (80, 200, 80))
+            surf.set_alpha(min(255, self.status_timer * 6))
+            self.screen.blit(surf, (18, self.H - 80))
+
+    # ── Panel ───────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        px = self.canvas_W + 10
+        bw = PANEL_W - 20
+        hw = (bw - 6) // 2           # half-width for side-by-side buttons
+
+        self.btn_draw   = Button((px,  48, bw, 36), "Draw Obstacles", active=(self.mode==MODE_DRAW))
+        self.btn_goal   = Button((px,  90, bw, 36), "Place Goals",    active=(self.mode==MODE_GOAL))
+
+        # File operations — start AFTER the info-text block (sep at 196, text 142-192)
+        self.btn_save   = Button((px, 204, bw, 32), "Save")
+        self.btn_saveas = Button((px, 242, bw, 32), "Save As...")
+        self.btn_load   = Button((px, 280, bw, 32), "Load...")
+
+        # Undo / Redo — after sep at 320, "History" micro-label at 322
+        self.btn_undo   = Button((px,          338, hw, 32), "↩  Undo")
+        self.btn_redo   = Button((px + hw + 6, 338, hw, 32), "Redo  ↪")
+
+        # Danger zone — after sep at 378
+        self.btn_clear  = Button((px, 386, bw, 32), "Clear All",
+                                 color_active=(200, 60, 60))
+
+        self.buttons = [self.btn_draw, self.btn_goal,
+                        self.btn_save, self.btn_saveas, self.btn_load,
+                        self.btn_undo, self.btn_redo,
+                        self.btn_clear]
+
+    def _draw_panel(self):
+        mpos = pygame.mouse.get_pos()
+        pygame.draw.rect(self.screen, PANEL_BG, (self.canvas_W, 0, PANEL_W, self.H))
+        pygame.draw.line(self.screen, PANEL_SEP,
+                         (self.canvas_W, 0), (self.canvas_W, self.H), 2)
+
+        # Title
+        t = self.font_l.render("MAP  EDITOR", True, PANEL_FG)
+        self.screen.blit(t, (self.canvas_W + PANEL_W//2 - t.get_width()//2, 14))
+
+        # Sync active states and draw all buttons
+        self.btn_draw.active = self.mode == MODE_DRAW
+        self.btn_goal.active = self.mode == MODE_GOAL
+        for btn in self.buttons:
+            btn.update(mpos); btn.draw(self.screen, self.font_s)
+
+        bx = self.canvas_W + 10
+
+        def sep(y):
+            pygame.draw.line(self.screen, PANEL_SEP,
+                             (bx, y), (self.canvas_W + PANEL_W - 10, y), 1)
+
+        def lbl(text, y, col=PANEL_FG):
+            s = self.font_s.render(text, True, col)
+            self.screen.blit(s, (bx, y))
+
+        # ── Mode / brush info  (between mode buttons and file buttons) ──────────
+        sep(134)
+        lbl(f"Mode  : {'DRAW' if self.mode==MODE_DRAW else 'GOAL'}", 142)
+        if self.mode == MODE_DRAW:
+            diam_m = (self.brush_cells * 2 + 1) * CELL_M
+            lbl(f"Brush : r={self.brush_cells} ({diam_m:.2f} m diam)", 159)
+            lbl("  [ / ]  to resize", 176, PANEL_DIM)
+
+        # sep at 196 → file buttons start at 204
+        sep(196)
+
+        # sep at 320 → undo/redo label at 322, buttons at 338
+        sep(320)
+        lbl("History  Ctrl+Z / Ctrl+Y", 322, PANEL_DIM)
+
+        # sep at 378 → clear button at 386
+        sep(378)
+
+        # ── Stats block (below clear button: 386+32=418) ─────────────────────────
+        sep(426)
+        level, block = self._lod()
+        y = 434
+        lbl("-- Stats --", y, PANEL_DIM);        y += 17
+        lbl(f"LOD   : {level}  ({block}x{block} cells merged)", y); y += 17
+        lbl(f"Display cell = {CELL_M*block*100:.4g} cm", y);        y += 17
+        lbl(f"Obstacles : {len(self.obstacles):,}", y);              y += 17
+        lbl(f"Goals     : {len(self.goals)}", y);                    y += 17
+        lbl(f"Zoom      : {self.ppm:.1f} px/m", y);                  y += 17
+        lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)", y);          y += 17
+
+        sep(y + 4)
+        fn = os.path.basename(self.current_file) if self.current_file else "(unsaved)"
+        lbl(f"File: {fn}", y + 10, PANEL_DIM)
+
+        # ── Controls reference at the very bottom ────────────────────────────────
+        sep(self.H - 228); cy = self.H - 222
+        lbl("-- Controls --", cy, PANEL_DIM); cy += 17
+        for key, desc in [
+            ("LMB drag",  "Paint / Place goal"),
+            ("RMB drag",  "Erase / Remove goal"),
+            ("MMB drag",  "Pan"),
+            ("Alt+drag",  "Pan (laptop)"),
+            ("Scroll",    "Zoom / merge cells"),
+            ("[ / ]",     "Brush size"),
+            ("Tab",       "Toggle mode"),
+            ("Ctrl+Z/Y",  "Undo / Redo"),
+            ("S",         "Save"),
+            ("Ctrl+S",    "Save as..."),
+            ("L",         "Load"),
+            ("R",         "Reset view"),
+            ("Del",       "Clear all"),
+        ]:
+            self.screen.blit(self.font_s.render(f"{key:<10}", True, (160,185,255)), (bx, cy))
+            self.screen.blit(self.font_s.render(desc, True, PANEL_DIM), (bx+80, cy))
+            cy += 17
+
+    # ── Events ──────────────────────────────────────────────────────────────────
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+
+            elif event.type == pygame.VIDEORESIZE:
+                self.W, self.H = event.w, event.h
+                self.canvas_W  = self.W - PANEL_W
+                self._build_ui()
+
+            elif event.type == pygame.KEYDOWN:
+                if not self._on_key(event): return False
+
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.pos[0] >= self.canvas_W: self._on_panel_click(event)
+                else:                              self._on_canvas_press(event)
+
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if   event.button == 1: self.drawing = False; self.panning = False
+                elif event.button == 3: self.erasing = False
+                elif event.button == 2: self.panning = False
+
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                if self.panning:
+                    dx = (mx - self.pan_start[0]) / self.ppm
+                    dy = (my - self.pan_start[1]) / self.ppm
+                    self.cam_x = self.pan_cam_orig[0] - dx
+                    self.cam_y = self.pan_cam_orig[1] - dy
+                elif mx < self.canvas_W:
+                    if   self.drawing: self.paint(mx, my)
+                    elif self.erasing: self.paint(mx, my, erase=True)
+
+            elif event.type == pygame.MOUSEWHEEL:
+                mx, my = pygame.mouse.get_pos()
+                if mx < self.canvas_W:
+                    self.zoom(event.y, mx, my)
+
+        return True
+
+    def _on_key(self, event):
+        ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
+        k    = event.key
+        if k == pygame.K_z and ctrl:
+            self.undo()
+        elif k == pygame.K_y and ctrl:
+            self.redo()
+        elif k == pygame.K_s:
+            if ctrl or self.current_file is None: self.save(force_dialog=True)
+            else:                                  self.save(self.current_file)
+        elif k == pygame.K_l:   self.load()
+        elif k == pygame.K_TAB: self.mode = MODE_GOAL if self.mode==MODE_DRAW else MODE_DRAW
+        elif k == pygame.K_LEFTBRACKET:  self.brush_cells = max(0, self.brush_cells - 1)
+        elif k == pygame.K_RIGHTBRACKET: self.brush_cells = min(500, self.brush_cells + 1)
+        elif k == pygame.K_r:   self.cam_x = 0.0; self.cam_y = 0.0; self.ppm = DEFAULT_PPM
+        elif k in (pygame.K_DELETE, pygame.K_BACKSPACE):
+            self._push_history()
+            self.obstacles.clear(); self.goals.clear()
+            self._status("Cleared all obstacles and goals.")
+        elif k == pygame.K_ESCAPE: return False
+        return True
+
+    def _on_panel_click(self, event):
+        if   self.btn_draw.hit(event):   self.mode = MODE_DRAW
+        elif self.btn_goal.hit(event):   self.mode = MODE_GOAL
+        elif self.btn_save.hit(event):
+            self.save(self.current_file if self.current_file else None)
+        elif self.btn_saveas.hit(event): self.save(force_dialog=True)
+        elif self.btn_load.hit(event):   self.load()
+        elif self.btn_undo.hit(event):   self.undo()
+        elif self.btn_redo.hit(event):   self.redo()
+        elif self.btn_clear.hit(event):
+            self._push_history()
+            self.obstacles.clear(); self.goals.clear()
+            self._status("Cleared all obstacles and goals.")
+
+    def _on_canvas_press(self, event):
+        mx, my = event.pos
+        alt_held = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
+        if event.button == 2 or (event.button == 1 and alt_held):
+            self.panning = True
+            self.pan_start    = event.pos
+            self.pan_cam_orig = (self.cam_x, self.cam_y)
+        elif self.mode == MODE_DRAW:
+            if   event.button == 1:
+                self._push_history()
+                self.drawing = True; self.paint(mx, my)
+            elif event.button == 3:
+                self._push_history()
+                self.erasing = True; self.paint(mx, my, erase=True)
+        elif self.mode == MODE_GOAL:
+            if   event.button == 1:
+                self._push_history()
+                self.place_goal(mx, my)
+            elif event.button == 3:
+                self._push_history()
+                self.remove_nearest_goal(mx, my)
+
+    def run(self):
+        while True:
+            self.clock.tick(60)
+            if not self.handle_events(): break
+            self.draw()
+        pygame.quit(); sys.exit(0)
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+def main():
+    p = argparse.ArgumentParser(description="5 cm/cell grid map editor")
+    p.add_argument("file", nargs="?", help="JSON map file to open on startup")
+    args = p.parse_args()
+    editor = MapEditor()
+    if args.file and os.path.isfile(args.file):
+        editor.load(args.file)
+    editor.run()
+
+if __name__ == "__main__":
+    main()
