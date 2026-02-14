@@ -251,6 +251,7 @@ class MapEditor:
         self.drawing       = False
         self.erasing       = False
         self.panning       = False
+        self._last_paint_pos: tuple | None = None   # for stroke interpolation
         self.pan_start     = (0, 0)
         self.pan_cam_orig  = (0.0, 0.0)
         self.current_file  = None
@@ -285,7 +286,8 @@ class MapEditor:
                 int(math.floor(wx / CELL_M)))
 
     # ── Edit operations ────────────────────────────────────────────────────────
-    def paint(self, sx, sy, erase=False):
+    def _stamp(self, sx, sy, erase=False):
+        """Stamp the brush once at screen position (sx, sy)."""
         wx, wy = self.screen_to_world(sx, sy)
         cr, cc = self.world_to_base_cell(wx, wy)
         r = self.brush_cells
@@ -294,6 +296,22 @@ class MapEditor:
                 if dr * dr + dc * dc <= r * r:
                     key = (cr + dr, cc + dc)
                     self.obstacles.discard(key) if erase else self.obstacles.add(key)
+
+    def paint(self, sx, sy, erase=False):
+        """Paint from the last position to (sx, sy), interpolating to fill gaps."""
+        if self._last_paint_pos is None:
+            self._stamp(sx, sy, erase)
+        else:
+            x0, y0 = self._last_paint_pos
+            dx, dy = sx - x0, sy - y0
+            dist = math.hypot(dx, dy)
+            # Step at most half a cell-width so no cell is ever skipped
+            step = max(1.0, CELL_M * self.ppm * 0.5)
+            steps = max(1, int(dist / step))
+            for i in range(steps + 1):
+                t = i / steps
+                self._stamp(x0 + dx * t, y0 + dy * t, erase)
+        self._last_paint_pos = (sx, sy)
 
     def place_goal(self, sx, sy):
         wx, wy = self.screen_to_world(sx, sy)
@@ -702,9 +720,14 @@ class MapEditor:
                 else:                              self._on_canvas_press(event)
 
             elif event.type == pygame.MOUSEBUTTONUP:
-                if   event.button == 1: self.drawing = False; self.panning = False
-                elif event.button == 3: self.erasing = False
-                elif event.button == 2: self.panning = False
+                if event.button == 1:
+                    self.drawing = False; self.panning = False
+                    self._last_paint_pos = None
+                elif event.button == 3:
+                    self.erasing = False
+                    self._last_paint_pos = None
+                elif event.button == 2:
+                    self.panning = False
 
             elif event.type == pygame.MOUSEMOTION:
                 mx, my = event.pos
@@ -770,9 +793,11 @@ class MapEditor:
         elif self.mode == MODE_DRAW:
             if   event.button == 1:
                 self._push_history()
+                self._last_paint_pos = None
                 self.drawing = True; self.paint(mx, my)
             elif event.button == 3:
                 self._push_history()
+                self._last_paint_pos = None
                 self.erasing = True; self.paint(mx, my, erase=True)
         elif self.mode == MODE_GOAL:
             if   event.button == 1:
