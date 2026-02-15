@@ -30,6 +30,7 @@ import math, json, os, sys
 import pygame
 import argparse
 from map_renderer_base import MapRendererBase, BG_COLOR, CELL_M, DEFAULT_PPM
+from dpi_utils import setup_pygame_dpi_awareness, get_system_scale_factor
 
 
 # ── Additional Palette for Editor ────────────────────────────────────────────
@@ -303,15 +304,25 @@ class EditorRenderer(MapRendererBase):
 # ─────────────────────────────────────────────────────────────────────────────
 class MapEditor:
     def __init__(self, width=1340, height=820):
+        # Setup DPI awareness before pygame.init()
+        scale_factor = setup_pygame_dpi_awareness()
         pygame.init()
-        self.W, self.H = width, height
-        self.canvas_W  = self.W - PANEL_W
+        
+        # Apply scale factor to window size
+        self.scale_factor = scale_factor
+        self.W, self.H = int(width * scale_factor), int(height * scale_factor)
+        self.canvas_W  = self.W - int(PANEL_W * scale_factor)
         self.screen    = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
         pygame.display.set_caption("Map Editor  |  5 cm / cell")
 
-        self.font_s = pygame.font.SysFont("monospace", 13)
-        self.font_m = pygame.font.SysFont("monospace", 15, bold=True)
-        self.font_l = pygame.font.SysFont("monospace", 18, bold=True)
+        # Scale fonts based on DPI
+        font_size_s = max(11, int(13 * scale_factor))
+        font_size_m = max(13, int(15 * scale_factor))
+        font_size_l = max(15, int(18 * scale_factor))
+        
+        self.font_s = pygame.font.SysFont("monospace", font_size_s)
+        self.font_m = pygame.font.SysFont("monospace", font_size_m, bold=True)
+        self.font_l = pygame.font.SysFont("monospace", font_size_l, bold=True)
         self.clock  = pygame.time.Clock()
 
         # Initialize renderer
@@ -586,24 +597,25 @@ class MapEditor:
 
     # ── Panel ───────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        px = self.canvas_W + 10
-        bw = PANEL_W - 20
-        hw = (bw - 6) // 2           # half-width for side-by-side buttons
+        panel_w = int(PANEL_W * self.scale_factor)
+        px = self.canvas_W + int(10 * self.scale_factor)
+        bw = panel_w - int(20 * self.scale_factor)
+        hw = (bw - int(6 * self.scale_factor)) // 2  # half-width for side-by-side buttons
 
-        self.btn_draw   = Button((px,  48, bw, 36), "Draw Obstacles", active=(self.mode==MODE_DRAW))
-        self.btn_goal   = Button((px,  90, bw, 36), "Place Goals",    active=(self.mode==MODE_GOAL))
+        self.btn_draw   = Button((px,  int(48 * self.scale_factor), bw, int(36 * self.scale_factor)), "Draw Obstacles", active=(self.mode==MODE_DRAW))
+        self.btn_goal   = Button((px,  int(90 * self.scale_factor), bw, int(36 * self.scale_factor)), "Place Goals",    active=(self.mode==MODE_GOAL))
 
         # File operations — start AFTER the info-text block (sep at 196, text 142-192)
-        self.btn_save   = Button((px, 204, bw, 32), "Save")
-        self.btn_saveas = Button((px, 242, bw, 32), "Save As...")
-        self.btn_load   = Button((px, 280, bw, 32), "Load...")
+        self.btn_save   = Button((px, int(204 * self.scale_factor), bw, int(32 * self.scale_factor)), "Save")
+        self.btn_saveas = Button((px, int(242 * self.scale_factor), bw, int(32 * self.scale_factor)), "Save As...")
+        self.btn_load   = Button((px, int(280 * self.scale_factor), bw, int(32 * self.scale_factor)), "Load...")
 
         # Undo / Redo — after sep at 320, "History" micro-label at 322
-        self.btn_undo   = Button((px,          338, hw, 32), "↩  Undo")
-        self.btn_redo   = Button((px + hw + 6, 338, hw, 32), "Redo  ↪")
+        self.btn_undo   = Button((px,                             int(338 * self.scale_factor), hw, int(32 * self.scale_factor)), "↩  Undo")
+        self.btn_redo   = Button((px + hw + int(6 * self.scale_factor), int(338 * self.scale_factor), hw, int(32 * self.scale_factor)), "Redo  ↪")
 
         # Danger zone — after sep at 378
-        self.btn_clear  = Button((px, 386, bw, 32), "Clear All",
+        self.btn_clear  = Button((px, int(386 * self.scale_factor), bw, int(32 * self.scale_factor)), "Clear All",
                                  color_active=(200, 60, 60))
 
         self.buttons = [self.btn_draw, self.btn_goal,
@@ -612,14 +624,15 @@ class MapEditor:
                         self.btn_clear]
 
     def _draw_panel(self):
+        panel_w = int(PANEL_W * self.scale_factor)
         mpos = pygame.mouse.get_pos()
-        pygame.draw.rect(self.screen, PANEL_BG, (self.canvas_W, 0, PANEL_W, self.H))
+        pygame.draw.rect(self.screen, PANEL_BG, (self.canvas_W, 0, panel_w, self.H))
         pygame.draw.line(self.screen, PANEL_SEP,
                          (self.canvas_W, 0), (self.canvas_W, self.H), 2)
 
         # Title
         t = self.font_l.render("MAP  EDITOR", True, PANEL_FG)
-        self.screen.blit(t, (self.canvas_W + PANEL_W//2 - t.get_width()//2, 14))
+        self.screen.blit(t, (self.canvas_W + panel_w//2 - t.get_width()//2, int(14 * self.scale_factor)))
 
         # Sync active states and draw all buttons
         self.btn_draw.active = self.mode == MODE_DRAW
@@ -627,15 +640,16 @@ class MapEditor:
         for btn in self.buttons:
             btn.update(mpos); btn.draw(self.screen, self.font_s)
 
-        bx = self.canvas_W + 10
+        bx = self.canvas_W + int(10 * self.scale_factor)
 
         def sep(y):
             pygame.draw.line(self.screen, PANEL_SEP,
-                             (bx, y), (self.canvas_W + PANEL_W - 10, y), 1)
+                             (bx, int(y * self.scale_factor)), 
+                             (self.canvas_W + panel_w - int(10 * self.scale_factor), int(y * self.scale_factor)), 1)
 
         def lbl(text, y, col=PANEL_FG):
             s = self.font_s.render(text, True, col)
-            self.screen.blit(s, (bx, y))
+            self.screen.blit(s, (bx, int(y * self.scale_factor)))
 
         # ── Mode / brush info  (between mode buttons and file buttons) ──────────
         sep(134)
@@ -672,7 +686,7 @@ class MapEditor:
         lbl(f"File: {fn}", y + 10, PANEL_DIM)
 
         # ── Controls reference at the very bottom ────────────────────────────────
-        sep(self.H - 228); cy = self.H - 222
+        sep(self.H / self.scale_factor - 228); cy = self.H / self.scale_factor - 222
         lbl("-- Controls --", cy, PANEL_DIM); cy += 17
         for key, desc in [
             ("LMB drag",  "Paint / Place goal"),
@@ -689,8 +703,8 @@ class MapEditor:
             ("R",         "Reset view"),
             ("Del",       "Clear all"),
         ]:
-            self.screen.blit(self.font_s.render(f"{key:<10}", True, (160,185,255)), (bx, cy))
-            self.screen.blit(self.font_s.render(desc, True, PANEL_DIM), (bx+80, cy))
+            self.screen.blit(self.font_s.render(f"{key:<10}", True, (160,185,255)), (bx, int(cy * self.scale_factor)))
+            self.screen.blit(self.font_s.render(desc, True, PANEL_DIM), (bx+int(80 * self.scale_factor), int(cy * self.scale_factor)))
             cy += 17
 
     # ── Events ──────────────────────────────────────────────────────────────────
@@ -701,7 +715,7 @@ class MapEditor:
 
             elif event.type == pygame.VIDEORESIZE:
                 self.W, self.H = event.w, event.h
-                self.canvas_W  = self.W - PANEL_W
+                self.canvas_W  = self.W - int(PANEL_W * self.scale_factor)
                 self.renderer.canvas_W = self.canvas_W
                 self._build_ui()
 

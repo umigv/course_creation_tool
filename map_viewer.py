@@ -17,6 +17,7 @@ import sys
 import pygame
 import numpy as np
 from map_renderer_base import MapRendererBase, BG_COLOR, DEFAULT_PPM
+from dpi_utils import setup_pygame_dpi_awareness, get_system_scale_factor
 
 
 # ── Additional Colors for Viewer ──────────────────────────────────────────────
@@ -48,7 +49,7 @@ class MapViewer(MapRendererBase):
         
         Args:
             map_file: Path to JSON map file from map_editor.py
-            width, height: Window dimensions in pixels
+            width, height: Window dimensions in pixels (logical, before scaling)
             robot_width: Robot width in meters
             robot_height: Robot height in meters (length)
             grid_offset_x: X offset from robot center to grid origin (meters)
@@ -57,10 +58,15 @@ class MapViewer(MapRendererBase):
             grid_width: Width of occupancy grid (meters)
             grid_height: Height of occupancy grid (meters)
         """
+        # Setup DPI awareness before pygame.init()
+        scale_factor = setup_pygame_dpi_awareness()
         pygame.init()
         
-        self.W = width
-        self.H = height
+        # Apply scale factor to window size
+        self.scale_factor = scale_factor
+        self.W = int(width * scale_factor)
+        self.H = int(height * scale_factor)
+        
         screen = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
         pygame.display.set_caption("Map Viewer")
         
@@ -68,7 +74,10 @@ class MapViewer(MapRendererBase):
         super().__init__(screen, DEFAULT_PPM)
         
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("monospace", 13)
+        
+        # Scale font size based on DPI
+        font_size = max(11, int(13 * scale_factor))
+        self.font = pygame.font.SysFont("monospace", font_size)
         
         # Load map
         self._load_map(map_file)
