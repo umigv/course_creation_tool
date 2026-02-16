@@ -70,14 +70,13 @@ class MapViewer(MapRendererBase):
         screen = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
         pygame.display.set_caption("Map Viewer")
         
-        # Initialize base class
-        super().__init__(screen, DEFAULT_PPM)
+        # Initialize base class with scale factor
+        super().__init__(screen, DEFAULT_PPM, scale_factor)
         
         self.clock = pygame.time.Clock()
         
-        # Scale font size based on DPI
-        font_size = max(11, int(13 * scale_factor))
-        self.font = pygame.font.SysFont("monospace", font_size)
+        # Create font with scaled size
+        self.font = pygame.font.SysFont("monospace", self.dims.font_size)
         
         # Load map
         self._load_map(map_file)
@@ -97,6 +96,17 @@ class MapViewer(MapRendererBase):
         # Calculate grid dimensions in cells
         self.grid_cells_x = int(self.grid_width / self.grid_resolution)
         self.grid_cells_y = int(self.grid_height / self.grid_resolution)
+        
+        # UI Scale slider
+        self.show_scale_slider = True
+        self.scale_slider_dragging = False
+        self.scale_slider_preview = None  # Preview scale while dragging
+        self.base_scale_factor = scale_factor  # Store original detected scale
+        self._update_font()
+    
+    def _update_font(self):
+        """Recreate font with current scale"""
+        self.font = pygame.font.SysFont("monospace", self.dims.font_size)
         
     def _load_map(self, filename):
         """Load obstacles from JSON file"""
@@ -175,6 +185,9 @@ class MapViewer(MapRendererBase):
         # Draw info overlay
         self._draw_info()
         
+        # Draw scale slider
+        self._draw_scale_slider()
+        
         pygame.display.flip()
     
     def _draw_robot(self):
@@ -200,7 +213,7 @@ class MapViewer(MapRendererBase):
         
         # Draw robot body
         pygame.draw.polygon(self.screen, ROBOT_COLOR, corners_world)
-        pygame.draw.polygon(self.screen, (0, 0, 0), corners_world, 2)
+        pygame.draw.polygon(self.screen, (0, 0, 0), corners_world, self.dims.robot_outline_width)
         
         # Draw direction indicator (front of robot) - points in +X direction at theta = 0
         front_local_x = hh
@@ -211,9 +224,11 @@ class MapViewer(MapRendererBase):
         center_screen = self.world_to_screen(self.robot_pose.x, self.robot_pose.y)
         front_screen = self.world_to_screen(front_world_x, front_world_y)
         
-        pygame.draw.line(self.screen, ROBOT_DIR_COLOR, center_screen, front_screen, 3)
+        pygame.draw.line(self.screen, ROBOT_DIR_COLOR, center_screen, front_screen, 
+                        self.dims.robot_direction_width)
         pygame.draw.circle(self.screen, ROBOT_DIR_COLOR, 
-                          (int(front_screen[0]), int(front_screen[1])), 5)
+                          (int(front_screen[0]), int(front_screen[1])), 
+                          self.dims.robot_direction_circle_radius)
     
     def _draw_occupancy_grid(self):
         """Draw the occupancy grid as a translucent box"""
@@ -242,7 +257,8 @@ class MapViewer(MapRendererBase):
         # Create translucent surface
         surf = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         pygame.draw.polygon(surf, OCCUPANCY_GRID_COLOR, corners_world)
-        pygame.draw.polygon(surf, (60, 200, 100, 180), corners_world, 2)
+        pygame.draw.polygon(surf, (60, 200, 100, 180), corners_world, 
+                          self.dims.occupancy_grid_outline_width)
         self.screen.blit(surf, (0, 0))
     
     def _draw_info(self):
@@ -258,15 +274,105 @@ class MapViewer(MapRendererBase):
             f"Obstacles: {len(self.obstacles):,}",
         ]
         
-        y = 10
+        margin = self.dims.info_margin
+        padding_x = self.dims.info_padding_x
+        padding_y = self.dims.info_padding_y
+        line_spacing = self.dims.info_line_spacing
+        
+        y = margin
         for line in lines:
             surf = self.font.render(line, True, (0, 0, 0))
-            bg = pygame.Surface((surf.get_width() + 10, surf.get_height() + 4))
+            bg = pygame.Surface((surf.get_width() + padding_x, surf.get_height() + padding_y))
             bg.fill((255, 255, 255))
             bg.set_alpha(200)
-            self.screen.blit(bg, (5, y - 2))
-            self.screen.blit(surf, (10, y))
-            y += surf.get_height() + 2
+            self.screen.blit(bg, (margin, y - padding_y // 2))
+            self.screen.blit(surf, (margin + padding_x // 2, y))
+            y += surf.get_height() + line_spacing
+    
+    def _draw_scale_slider(self):
+        """Draw UI scale slider at bottom of screen"""
+        if not self.show_scale_slider:
+            return
+        
+        # Use current scale for layout, but base scale for positioning stability
+        ui_scale = self.dims.scale
+        
+        # Slider dimensions - use current scale
+        slider_w = int(200 * ui_scale)
+        slider_h = int(30 * ui_scale)
+        slider_x = self.W - slider_w - int(20 * ui_scale)
+        slider_y = self.H - slider_h - int(20 * ui_scale)
+        
+        # Background
+        bg_padding = int(10 * ui_scale)
+        bg_top_pad = int(25 * ui_scale)
+        bg_bottom_pad = int(15 * ui_scale)
+        bg = pygame.Surface((slider_w + bg_padding * 2, slider_h + bg_top_pad + bg_bottom_pad), pygame.SRCALPHA)
+        bg.fill((255, 255, 255, 200))
+        self.screen.blit(bg, (slider_x - bg_padding, slider_y - bg_top_pad))
+        
+        # Label - show preview scale while dragging, otherwise current scale
+        display_scale = self.scale_slider_preview if self.scale_slider_preview is not None else self.dims.scale
+        label_font = pygame.font.SysFont("monospace", int(11 * ui_scale))
+        label = label_font.render(f"UI Scale: {display_scale:.2f}x", True, (0, 0, 0))
+        self.screen.blit(label, (slider_x, slider_y - int(18 * ui_scale)))
+        
+        # Slider track
+        track_y_offset = int(10 * ui_scale)
+        track_h = int(4 * ui_scale)
+        track_rect = pygame.Rect(slider_x, slider_y + track_y_offset, slider_w, track_h)
+        pygame.draw.rect(self.screen, (180, 180, 180), track_rect, border_radius=2)
+        
+        # Slider thumb position (0.5x to 3.0x) - use preview or current
+        scale_range = 3.0 - 0.5
+        normalized = (display_scale - 0.5) / scale_range
+        thumb_x = slider_x + int(normalized * slider_w)
+        thumb_y = slider_y + track_y_offset + track_h // 2
+        thumb_radius = int(8 * ui_scale)
+        
+        # Thumb - different color when dragging
+        thumb_color = (100, 150, 255) if self.scale_slider_dragging else (72, 136, 255)
+        pygame.draw.circle(self.screen, thumb_color, (thumb_x, thumb_y), thumb_radius)
+        pygame.draw.circle(self.screen, (255, 255, 255), (thumb_x, thumb_y), thumb_radius - max(1, int(2 * ui_scale)))
+        
+        return pygame.Rect(slider_x, slider_y, slider_w, slider_h)
+    
+    def _get_slider_rect(self):
+        """Get the slider interaction rect"""
+        if not self.show_scale_slider:
+            return None
+        
+        ui_scale = self.dims.scale
+        slider_w = int(200 * ui_scale)
+        slider_h = int(30 * ui_scale)
+        slider_x = self.W - slider_w - int(20 * ui_scale)
+        slider_y = self.H - slider_h - int(20 * ui_scale)
+        
+        return pygame.Rect(slider_x, slider_y, slider_w, slider_h)
+    
+    def _update_scale_from_mouse(self, mx):
+        """Update scale preview based on mouse x position"""
+        slider_rect = self._get_slider_rect()
+        if not slider_rect:
+            return
+        
+        # Calculate new scale (0.5x to 3.0x)
+        normalized = (mx - slider_rect.x) / slider_rect.w
+        normalized = max(0.0, min(1.0, normalized))
+        new_scale = 0.5 + normalized * (3.0 - 0.5)
+        
+        # Store preview scale (don't apply until mouse up)
+        self.scale_slider_preview = new_scale
+    
+    def _apply_scale_change(self):
+        """Apply the previewed scale change"""
+        if self.scale_slider_preview is None:
+            return
+        
+        # Update scale
+        self.dims.scale = self.scale_slider_preview
+        self.scale_slider_preview = None
+        self._update_font()
     
     def handle_events(self):
         """Handle pygame events"""
@@ -282,17 +388,34 @@ class MapViewer(MapRendererBase):
                     return False
                 elif event.key == pygame.K_r:
                     self.reset_view()
+                elif event.key == pygame.K_u:
+                    # Toggle UI scale slider
+                    self.show_scale_slider = not self.show_scale_slider
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:  # LMB starts panning
-                    self.start_pan(event.pos)
+                if event.button == 1:  # LMB
+                    # Check if clicking on slider
+                    slider_rect = self._get_slider_rect()
+                    if slider_rect and slider_rect.collidepoint(event.pos):
+                        self.scale_slider_dragging = True
+                        self._update_scale_from_mouse(event.pos[0])
+                    else:
+                        # Start panning
+                        self.start_pan(event.pos)
             
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1:  # LMB stops panning
+                if event.button == 1:  # LMB
+                    # Apply scale change if slider was being dragged
+                    if self.scale_slider_dragging:
+                        self._apply_scale_change()
+                    self.scale_slider_dragging = False
                     self.stop_pan()
             
             elif event.type == pygame.MOUSEMOTION:
-                self.update_pan(event.pos)
+                if self.scale_slider_dragging:
+                    self._update_scale_from_mouse(event.pos[0])
+                else:
+                    self.update_pan(event.pos)
             
             elif event.type == pygame.MOUSEWHEEL:
                 mx, my = pygame.mouse.get_pos()

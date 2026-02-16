@@ -221,8 +221,8 @@ class EditorRenderer(MapRendererBase):
     The canvas is (W - PANEL_W) wide, and coordinates are adjusted accordingly.
     """
     
-    def __init__(self, screen, canvas_width, initial_ppm=DEFAULT_PPM):
-        super().__init__(screen, initial_ppm)
+    def __init__(self, screen, canvas_width, initial_ppm=DEFAULT_PPM, scale_factor=1.0):
+        super().__init__(screen, initial_ppm, scale_factor)
         self.canvas_W = canvas_width
     
     def world_to_screen(self, wx, wy):
@@ -261,6 +261,8 @@ class EditorRenderer(MapRendererBase):
         start_x = math.floor(x_min / grid_size) * grid_size
         start_y = math.floor(y_min / grid_size) * grid_size
         
+        grid_line_width = self.dims.grid_line_width
+        
         # Vertical lines
         x = start_x
         while x <= x_max:
@@ -273,7 +275,7 @@ class EditorRenderer(MapRendererBase):
             else:
                 color = GRID_MINOR
             if 0 <= sx <= self.canvas_W:
-                pygame.draw.line(self.screen, color, (sx, 0), (sx, H), 1)
+                pygame.draw.line(self.screen, color, (sx, 0), (sx, H), grid_line_width)
             x += grid_size
         
         # Horizontal lines
@@ -287,16 +289,17 @@ class EditorRenderer(MapRendererBase):
                 color = GRID_MAJOR
             else:
                 color = GRID_MINOR
-            pygame.draw.line(self.screen, color, (0, sy), (self.canvas_W, sy), 1)
+            pygame.draw.line(self.screen, color, (0, sy), (self.canvas_W, sy), grid_line_width)
             y += grid_size
         
         # Draw axes (clipped to canvas)
         x0, _ = self.world_to_screen(0, 0)
         _, y0 = self.world_to_screen(0, 0)
+        axis_line_width = self.dims.axis_line_width
         if 0 <= x0 <= self.canvas_W:
-            pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, H), 2)
+            pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, H), axis_line_width)
         if 0 <= y0 <= H:
-            pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (self.canvas_W, y0), 2)
+            pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (self.canvas_W, y0), axis_line_width)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -326,7 +329,7 @@ class MapEditor:
         self.clock  = pygame.time.Clock()
 
         # Initialize renderer
-        self.renderer = EditorRenderer(self.screen, self.canvas_W, DEFAULT_PPM)
+        self.renderer = EditorRenderer(self.screen, self.canvas_W, DEFAULT_PPM, scale_factor)
 
         self.goals: list     = []      # world metres (x, y)
 
@@ -343,10 +346,41 @@ class MapEditor:
         self._undo_stack: list = []
         self._redo_stack: list = []
         self._MAX_HISTORY = 64
+        
+        # UI Scale slider
+        self.base_scale_factor = scale_factor  # Store original detected scale
+        self.scale_slider_dragging = False
+        self.scale_slider_preview = None  # Preview scale while dragging
+        
+        # Panel scrolling
+        self.panel_scroll_offset = 0  # Current scroll position
+        self.panel_content_height = 0  # Total height of panel content
+        self.scrollbar_dragging = False
+        self.scrollbar_drag_start_y = 0
+        self.scrollbar_drag_start_scroll = 0
 
         self._build_ui()
+    
+    @property
+    def current_scale(self):
+        """Get current UI scale (dynamic, from slider)"""
+        return self.renderer.dims.scale
+    
+    def _get_ui_scale(self):
+        """Get current UI scale factor for layout calculations"""
+        return self.renderer.dims.scale
 
     # ── Coordinates ────────────────────────────────────────────────────────────
+    def _update_fonts(self):
+        """Recreate fonts with current scale"""
+        font_size_s = max(11, int(13 * self.renderer.dims.scale))
+        font_size_m = max(13, int(15 * self.renderer.dims.scale))
+        font_size_l = max(15, int(18 * self.renderer.dims.scale))
+        
+        self.font_s = pygame.font.SysFont("monospace", font_size_s)
+        self.font_m = pygame.font.SysFont("monospace", font_size_m, bold=True)
+        self.font_l = pygame.font.SysFont("monospace", font_size_l, bold=True)
+    
     def world_to_base_cell(self, wx, wy):
         """Convert world coordinates to cell indices (row, col)"""
         return (int(math.floor(wy / CELL_M)),
@@ -597,25 +631,26 @@ class MapEditor:
 
     # ── Panel ───────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        panel_w = int(PANEL_W * self.scale_factor)
-        px = self.canvas_W + int(10 * self.scale_factor)
-        bw = panel_w - int(20 * self.scale_factor)
-        hw = (bw - int(6 * self.scale_factor)) // 2  # half-width for side-by-side buttons
+        ui_scale = self._get_ui_scale()
+        panel_w = int(PANEL_W * ui_scale)
+        px = self.canvas_W + int(10 * ui_scale)
+        bw = panel_w - int(20 * ui_scale)
+        hw = (bw - int(6 * ui_scale)) // 2  # half-width for side-by-side buttons
 
-        self.btn_draw   = Button((px,  int(48 * self.scale_factor), bw, int(36 * self.scale_factor)), "Draw Obstacles", active=(self.mode==MODE_DRAW))
-        self.btn_goal   = Button((px,  int(90 * self.scale_factor), bw, int(36 * self.scale_factor)), "Place Goals",    active=(self.mode==MODE_GOAL))
+        self.btn_draw   = Button((px,  int(48 * ui_scale), bw, int(36 * ui_scale)), "Draw Obstacles", active=(self.mode==MODE_DRAW))
+        self.btn_goal   = Button((px,  int(90 * ui_scale), bw, int(36 * ui_scale)), "Place Goals",    active=(self.mode==MODE_GOAL))
 
         # File operations — start AFTER the info-text block (sep at 196, text 142-192)
-        self.btn_save   = Button((px, int(204 * self.scale_factor), bw, int(32 * self.scale_factor)), "Save")
-        self.btn_saveas = Button((px, int(242 * self.scale_factor), bw, int(32 * self.scale_factor)), "Save As...")
-        self.btn_load   = Button((px, int(280 * self.scale_factor), bw, int(32 * self.scale_factor)), "Load...")
+        self.btn_save   = Button((px, int(204 * ui_scale), bw, int(32 * ui_scale)), "Save")
+        self.btn_saveas = Button((px, int(242 * ui_scale), bw, int(32 * ui_scale)), "Save As...")
+        self.btn_load   = Button((px, int(280 * ui_scale), bw, int(32 * ui_scale)), "Load...")
 
         # Undo / Redo — after sep at 320, "History" micro-label at 322
-        self.btn_undo   = Button((px,                             int(338 * self.scale_factor), hw, int(32 * self.scale_factor)), "↩  Undo")
-        self.btn_redo   = Button((px + hw + int(6 * self.scale_factor), int(338 * self.scale_factor), hw, int(32 * self.scale_factor)), "Redo  ↪")
+        self.btn_undo   = Button((px,                             int(338 * ui_scale), hw, int(32 * ui_scale)), "↩  Undo")
+        self.btn_redo   = Button((px + hw + int(6 * ui_scale), int(338 * ui_scale), hw, int(32 * ui_scale)), "Redo  ↪")
 
         # Danger zone — after sep at 378
-        self.btn_clear  = Button((px, int(386 * self.scale_factor), bw, int(32 * self.scale_factor)), "Clear All",
+        self.btn_clear  = Button((px, int(386 * ui_scale), bw, int(32 * ui_scale)), "Clear All",
                                  color_active=(200, 60, 60))
 
         self.buttons = [self.btn_draw, self.btn_goal,
@@ -624,76 +659,123 @@ class MapEditor:
                         self.btn_clear]
 
     def _draw_panel(self):
-        panel_w = int(PANEL_W * self.scale_factor)
+        ui_scale = self._get_ui_scale()
+        panel_w = int(PANEL_W * ui_scale)
         mpos = pygame.mouse.get_pos()
+        
+        # Draw panel background
         pygame.draw.rect(self.screen, PANEL_BG, (self.canvas_W, 0, panel_w, self.H))
-        pygame.draw.line(self.screen, PANEL_SEP,
-                         (self.canvas_W, 0), (self.canvas_W, self.H), 2)
+        pygame.draw.line(self.screen, PANEL_SEP, (self.canvas_W, 0), (self.canvas_W, self.H), 2)
 
-        # Title
+        # Title (not scrolled)
         t = self.font_l.render("MAP  EDITOR", True, PANEL_FG)
-        self.screen.blit(t, (self.canvas_W + panel_w//2 - t.get_width()//2, int(14 * self.scale_factor)))
+        self.screen.blit(t, (self.canvas_W + panel_w//2 - t.get_width()//2, int(14 * ui_scale)))
 
-        # Sync active states and draw all buttons
+        # Buttons (not scrolled)
         self.btn_draw.active = self.mode == MODE_DRAW
         self.btn_goal.active = self.mode == MODE_GOAL
         for btn in self.buttons:
-            btn.update(mpos); btn.draw(self.screen, self.font_s)
+            btn.update(mpos)
+            btn.draw(self.screen, self.font_s)
 
-        bx = self.canvas_W + int(10 * self.scale_factor)
-
-        def sep(y):
-            pygame.draw.line(self.screen, PANEL_SEP,
-                             (bx, int(y * self.scale_factor)), 
-                             (self.canvas_W + panel_w - int(10 * self.scale_factor), int(y * self.scale_factor)), 1)
-
-        def lbl(text, y, col=PANEL_FG):
+        # Scrollable content starts after last button
+        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
+        scrollable_height = self.H - scrollable_start
+        
+        # Create virtual surface for scrollable content
+        virtual_h = max(4000, self.H * 2)
+        virtual_surf = pygame.Surface((panel_w, virtual_h))
+        virtual_surf.fill(PANEL_BG)
+        
+        bx_virtual = int(10 * ui_scale)
+        bx_screen = self.canvas_W + int(10 * ui_scale)
+        y = 0
+        
+        # Helper functions drawing to virtual surface
+        def sep(spacing=8):
+            nonlocal y
+            y += int(spacing * ui_scale)
+            pygame.draw.line(virtual_surf, PANEL_SEP,
+                           (bx_virtual, y), (panel_w - int(10 * ui_scale), y), 1)
+            y += int(4 * ui_scale)
+        
+        def lbl(text, col=PANEL_FG, spacing=0):
+            nonlocal y
+            y += int(spacing * ui_scale)
             s = self.font_s.render(text, True, col)
-            self.screen.blit(s, (bx, int(y * self.scale_factor)))
+            virtual_surf.blit(s, (bx_virtual, y))
+            y += s.get_height() + int(2 * ui_scale)
 
-        # ── Mode / brush info  (between mode buttons and file buttons) ──────────
-        sep(134)
-        lbl(f"Mode  : {'DRAW' if self.mode==MODE_DRAW else 'GOAL'}", 142)
+        # Scrollable content starts here
+        y = 0
+        
+        # Mode/brush info
+        sep(4)
+        lbl(f"Mode  : {'DRAW' if self.mode==MODE_DRAW else 'GOAL'}")
         if self.mode == MODE_DRAW:
             diam_m = (self.brush_cells * 2 + 1) * CELL_M
-            lbl(f"Brush : r={self.brush_cells} ({diam_m:.2f} m diam)", 159)
-            lbl("  [ / ]  to resize", 176, PANEL_DIM)
+            lbl(f"Brush : r={self.brush_cells} ({diam_m:.2f} m diam)")
+            lbl("  [ / ]  to resize", PANEL_DIM)
 
-        # sep at 196 → file buttons start at 204
-        sep(196)
-
-        # sep at 320 → undo/redo label at 322, buttons at 338
-        sep(320)
-        lbl("History  Ctrl+Z / Ctrl+Y", 322, PANEL_DIM)
-
-        # sep at 378 → clear button at 386
-        sep(378)
-
-        # ── Stats block (below clear button: 386+32=418) ─────────────────────────
-        sep(426)
+        # Stats
+        sep(8)
+        lbl("-- Stats --", PANEL_DIM, 4)
         level, block = self.renderer._lod()
-        y = 434
-        lbl("-- Stats --", y, PANEL_DIM);        y += 17
-        lbl(f"LOD   : {level}  ({block}x{block} cells merged)", y); y += 17
-        lbl(f"Display cell = {CELL_M*block*100:.4g} cm", y);        y += 17
-        lbl(f"Obstacles : {len(self.renderer.obstacles):,}", y);              y += 17
-        lbl(f"Goals     : {len(self.goals)}", y);                    y += 17
-        lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m", y);                  y += 17
-        lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)", y);          y += 17
+        lbl(f"LOD   : {level}  ({block}x{block} cells merged)")
+        lbl(f"Display cell = {CELL_M*block*100:.4g} cm")
+        lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
+        lbl(f"Goals     : {len(self.goals)}")
+        lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
+        lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)")
 
-        sep(y + 4)
+        sep(8)
         fn = os.path.basename(self.current_file) if self.current_file else "(unsaved)"
-        lbl(f"File: {fn}", y + 10, PANEL_DIM)
+        lbl(f"File: {fn}", PANEL_DIM)
+        
+        # UI Scale Slider
+        sep(8)
+        display_scale = self.scale_slider_preview if self.scale_slider_preview is not None else self.renderer.dims.scale
+        lbl(f"UI Scale: {display_scale:.2f}x", PANEL_DIM)
+        
+        slider_w = panel_w - int(40 * ui_scale)
+        slider_x_virtual = bx_virtual + int(10 * ui_scale)
+        slider_y_virtual = y + int(4 * ui_scale)
+        track_h = int(4 * ui_scale)
+        
+        pygame.draw.rect(virtual_surf, (60, 66, 85), 
+                        pygame.Rect(slider_x_virtual, slider_y_virtual, slider_w, track_h), 
+                        border_radius=2)
+        
+        scale_range = 3.0 - 0.5
+        normalized = (display_scale - 0.5) / scale_range
+        thumb_x = slider_x_virtual + int(normalized * slider_w)
+        thumb_y = slider_y_virtual + track_h // 2
+        thumb_radius = int(7 * ui_scale)
+        
+        thumb_color = (100, 150, 255) if self.scale_slider_dragging else BTN_ACTIVE
+        pygame.draw.circle(virtual_surf, thumb_color, (thumb_x, thumb_y), thumb_radius)
+        pygame.draw.circle(virtual_surf, PANEL_FG, (thumb_x, thumb_y), thumb_radius - 2)
+        
+        # Store slider rect (adjusted for scroll and screen position)
+        self._slider_rect = pygame.Rect(
+            self.canvas_W + slider_x_virtual,
+            scrollable_start + slider_y_virtual - self.panel_scroll_offset,
+            slider_w, thumb_radius * 2
+        )
+        
+        y = slider_y_virtual + int(20 * ui_scale)
 
-        # ── Controls reference at the very bottom ────────────────────────────────
-        sep(self.H / self.scale_factor - 228); cy = self.H / self.scale_factor - 222
-        lbl("-- Controls --", cy, PANEL_DIM); cy += 17
-        for key, desc in [
+        # Controls
+        sep(8)
+        lbl("-- Controls --", PANEL_DIM, 4)
+        
+        controls = [
             ("LMB drag",  "Paint / Place goal"),
             ("RMB drag",  "Erase / Remove goal"),
             ("MMB drag",  "Pan"),
             ("Alt+drag",  "Pan (laptop)"),
-            ("Scroll",    "Zoom / merge cells"),
+            ("Scroll",    "Zoom (canvas) / Scroll (panel)"),
+            ("Slider",    "UI Scale"),
             ("[ / ]",     "Brush size"),
             ("Tab",       "Toggle mode"),
             ("Ctrl+Z/Y",  "Undo / Redo"),
@@ -702,12 +784,109 @@ class MapEditor:
             ("L",         "Load"),
             ("R",         "Reset view"),
             ("Del",       "Clear all"),
-        ]:
-            self.screen.blit(self.font_s.render(f"{key:<10}", True, (160,185,255)), (bx, int(cy * self.scale_factor)))
-            self.screen.blit(self.font_s.render(desc, True, PANEL_DIM), (bx+int(80 * self.scale_factor), int(cy * self.scale_factor)))
-            cy += 17
-
-    # ── Events ──────────────────────────────────────────────────────────────────
+        ]
+        
+        for key, desc in controls:
+            s1 = self.font_s.render(f"{key:<10}", True, (160,185,255))
+            s2 = self.font_s.render(desc, True, PANEL_DIM)
+            virtual_surf.blit(s1, (bx_virtual, y))
+            virtual_surf.blit(s2, (bx_virtual + int(80 * ui_scale), y))
+            y += self.font_s.get_height() + int(2 * ui_scale)
+        
+        # Store content height
+        self.panel_content_height = y + int(20 * ui_scale)
+        
+        # Clamp scroll
+        max_scroll = max(0, self.panel_content_height - scrollable_height)
+        self.panel_scroll_offset = max(0, min(self.panel_scroll_offset, max_scroll))
+        
+        # Blit scrollable portion
+        source_rect = pygame.Rect(0, self.panel_scroll_offset, panel_w, scrollable_height)
+        self.screen.blit(virtual_surf, (self.canvas_W, scrollable_start), source_rect)
+        
+        # Draw scrollbar if needed
+        if self.panel_content_height > scrollable_height:
+            self._draw_scrollbar(panel_w, scrollable_start, scrollable_height)
+    
+    def _draw_scrollbar(self, panel_w, start_y, height):
+        """Draw vertical scrollbar on panel"""
+        ui_scale = self._get_ui_scale()
+        scrollbar_w = int(8 * ui_scale)
+        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
+        
+        # Track
+        track_rect = pygame.Rect(scrollbar_x, start_y, scrollbar_w, height)
+        pygame.draw.rect(self.screen, (40, 44, 56), track_rect, border_radius=4)
+        
+        # Thumb
+        if self.panel_content_height > height:
+            thumb_h = max(int(30 * ui_scale), int(height * height / self.panel_content_height))
+            scroll_ratio = self.panel_scroll_offset / max(1, self.panel_content_height - height)
+            thumb_y = start_y + int(scroll_ratio * (height - thumb_h))
+            
+            thumb_rect = pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_h)
+            pygame.draw.rect(self.screen, (BTN_ACTIVE if self._is_scrollbar_hovered() else (80, 88, 110)), 
+                           thumb_rect, border_radius=4)
+    
+    def _is_scrollbar_hovered(self):
+        """Check if mouse is over scrollbar"""
+        mx, my = pygame.mouse.get_pos()
+        ui_scale = self._get_ui_scale()
+        panel_w = int(PANEL_W * ui_scale)
+        scrollbar_w = int(8 * ui_scale)
+        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
+        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
+        
+        return (scrollbar_x <= mx < scrollbar_x + scrollbar_w and 
+                scrollable_start <= my < self.H)
+    
+    def _get_scrollbar_thumb_rect(self):
+        """Get scrollbar thumb rect for interaction"""
+        ui_scale = self._get_ui_scale()
+        panel_w = int(PANEL_W * ui_scale)
+        scrollbar_w = int(8 * ui_scale)
+        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
+        
+        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
+        scrollable_height = self.H - scrollable_start
+        
+        if self.panel_content_height <= scrollable_height:
+            return None
+        
+        thumb_h = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
+        scroll_ratio = self.panel_scroll_offset / max(1, self.panel_content_height - scrollable_height)
+        thumb_y = scrollable_start + int(scroll_ratio * (scrollable_height - thumb_h))
+        
+        return pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_h)
+    def _update_scale_from_mouse(self, mx):
+        """Update scale preview based on mouse x position on slider"""
+        if not hasattr(self, '_slider_rect'):
+            return
+        
+        # Calculate new scale (0.5x to 3.0x)
+        normalized = (mx - self._slider_rect.x) / self._slider_rect.w
+        normalized = max(0.0, min(1.0, normalized))
+        new_scale = 0.5 + normalized * (3.0 - 0.5)
+        
+        # Store preview scale (don't apply until mouse up)
+        self.scale_slider_preview = new_scale
+    
+    def _apply_scale_change(self):
+        """Apply the previewed scale change"""
+        if self.scale_slider_preview is None:
+            return
+        
+        # Update scale and rebuild UI
+        self.renderer.dims.scale = self.scale_slider_preview
+        self.scale_slider_preview = None
+        self._update_fonts()
+        
+        # Update canvas width with new scale
+        ui_scale = self._get_ui_scale()
+        self.canvas_W = self.W - int(PANEL_W * ui_scale)
+        self.renderer.canvas_W = self.canvas_W
+        self._build_ui()
+    
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -715,7 +894,8 @@ class MapEditor:
 
             elif event.type == pygame.VIDEORESIZE:
                 self.W, self.H = event.w, event.h
-                self.canvas_W  = self.W - int(PANEL_W * self.scale_factor)
+                ui_scale = self._get_ui_scale()
+                self.canvas_W  = self.W - int(PANEL_W * ui_scale)
                 self.renderer.canvas_W = self.canvas_W
                 self._build_ui()
 
@@ -730,6 +910,11 @@ class MapEditor:
                 if event.button == 1:
                     self.drawing = False
                     self.renderer.stop_pan()
+                    self.scrollbar_dragging = False
+                    # Apply scale change if slider was being dragged
+                    if self.scale_slider_dragging:
+                        self._apply_scale_change()
+                    self.scale_slider_dragging = False
                     self._last_paint_pos = None
                 elif event.button == 3:
                     self.erasing = False
@@ -738,7 +923,24 @@ class MapEditor:
                     self.renderer.stop_pan()
 
             elif event.type == pygame.MOUSEMOTION:
-                if self.renderer.panning:
+                if self.scrollbar_dragging:
+                    # Calculate scroll based on drag
+                    ui_scale = self._get_ui_scale()
+                    scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
+                    scrollable_height = self.H - scrollable_start
+                    
+                    dy = event.pos[1] - self.scrollbar_drag_start_y
+                    thumb_h = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
+                    scroll_range = scrollable_height - thumb_h
+                    content_range = self.panel_content_height - scrollable_height
+                    
+                    if scroll_range > 0:
+                        scroll_delta = dy * content_range / scroll_range
+                        self.panel_scroll_offset = self.scrollbar_drag_start_scroll + scroll_delta
+                
+                elif self.scale_slider_dragging:
+                    self._update_scale_from_mouse(event.pos[0])
+                elif self.renderer.panning:
                     self.renderer.update_pan(event.pos)
                 elif event.pos[0] < self.canvas_W:
                     if   self.drawing: self.paint(event.pos[0], event.pos[1])
@@ -747,7 +949,13 @@ class MapEditor:
             elif event.type == pygame.MOUSEWHEEL:
                 mx, my = pygame.mouse.get_pos()
                 if mx < self.canvas_W:
+                    # Zoom canvas
                     self.renderer.zoom(event.y, mx, my)
+                else:
+                    # Scroll panel
+                    ui_scale = self._get_ui_scale()
+                    scroll_amount = int(30 * ui_scale)
+                    self.panel_scroll_offset -= event.y * scroll_amount
 
         return True
 
@@ -774,6 +982,23 @@ class MapEditor:
         return True
 
     def _on_panel_click(self, event):
+        # Check scrollbar first
+        thumb_rect = self._get_scrollbar_thumb_rect()
+        if thumb_rect and thumb_rect.collidepoint(event.pos):
+            if event.button == 1:
+                self.scrollbar_dragging = True
+                self.scrollbar_drag_start_y = event.pos[1]
+                self.scrollbar_drag_start_scroll = self.panel_scroll_offset
+            return
+        
+        # Check slider
+        if hasattr(self, '_slider_rect') and self._slider_rect.collidepoint(event.pos):
+            if event.button == 1:
+                self.scale_slider_dragging = True
+                self._update_scale_from_mouse(event.pos[0])
+            return
+        
+        # Then check buttons
         if   self.btn_draw.hit(event):   self.mode = MODE_DRAW
         elif self.btn_goal.hit(event):   self.mode = MODE_GOAL
         elif self.btn_save.hit(event):
