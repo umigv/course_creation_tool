@@ -5,7 +5,6 @@ Supports Ubuntu/Linux, Windows, and macOS.
 """
 
 import os
-import sys
 import subprocess
 import platform
 
