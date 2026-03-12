@@ -30,7 +30,7 @@ import math, json, os, sys
 import pygame
 import argparse
 from map_renderer_base import MapRendererBase, BG_COLOR, CELL_M, DEFAULT_PPM
-from dpi_utils import setup_pygame_dpi_awareness, get_system_scale_factor
+from dpi_utils import setup_pygame_dpi_awareness
 
 
 # ── Additional Palette for Editor ────────────────────────────────────────────
@@ -382,20 +382,20 @@ class MapEditor:
         self.font_l = pygame.font.SysFont("monospace", font_size_l, bold=True)
     
     def world_to_base_cell(self, wx, wy):
-        """Convert world coordinates to cell indices (row, col)"""
-        return (int(math.floor(wy / CELL_M)),
-                int(math.floor(wx / CELL_M)))
+        """Convert world coordinates to cell indices (cx, cy)"""
+        return (int(math.floor(wx / CELL_M)),
+                int(math.floor(wy / CELL_M)))
 
     # ── Edit operations ────────────────────────────────────────────────────────
     def _stamp(self, sx, sy, erase=False):
         """Stamp the brush once at screen position (sx, sy)."""
         wx, wy = self.renderer.screen_to_world(sx, sy)
-        cr, cc = self.world_to_base_cell(wx, wy)
+        cx, cy = self.world_to_base_cell(wx, wy)
         r = self.brush_cells
-        for dr in range(-r, r + 1):
-            for dc in range(-r, r + 1):
-                if dr * dr + dc * dc <= r * r:
-                    key = (cr + dr, cc + dc)
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if dx * dx + dy * dy <= r * r:
+                    key = (cx + dx, cy + dy)
                     if erase:
                         self.renderer.obstacles.discard(key)
                     else:
@@ -449,7 +449,7 @@ class MapEditor:
 
         try:
             data = {
-                "cell_m":    CELL_M,
+                "resolution_m":    CELL_M,
                 "obstacles": [list(o) for o in self.renderer.obstacles],
                 "goals":     [list(g) for g in self.goals],
             }
@@ -498,15 +498,15 @@ class MapEditor:
                 error=str(e))
             return
 
-        saved_cm = float(data.get("cell_m", CELL_M))
+        saved_cm = float(data.get("resolution_m", CELL_M))
         scale    = max(1, round(saved_cm / CELL_M))
 
         self.renderer.obstacles = set()
         for o in data.get("obstacles", []):
-            r0, c0 = int(o[0]), int(o[1])
-            for dr in range(scale):
-                for dc in range(scale):
-                    self.renderer.obstacles.add((r0*scale + dr, c0*scale + dc))
+            x0, y0 = int(o[0]), int(o[1])
+            for dx in range(scale):
+                for dy in range(scale):
+                    self.renderer.obstacles.add((x0*scale + dx, y0*scale + dy))
 
         self.goals        = [tuple(g) for g in data.get("goals", [])]
         self.current_file = path
@@ -616,9 +616,9 @@ class MapEditor:
         mx, my = pygame.mouse.get_pos()
         if mx < self.canvas_W:
             wx, wy = self.renderer.screen_to_world(mx, my)
-            cr, cc = self.world_to_base_cell(wx, wy)
+            cx, cy = self.world_to_base_cell(wx, wy)
             txt = self.font_s.render(
-                f"({wx:+.4f}, {wy:+.4f}) m   cell ({cc}, {cr})   LOD {level} ({block}x{block})",
+                f"({wx:+.4f}, {wy:+.4f}) m   cell ({cx}, {cy})   LOD {level} ({block}x{block})",
                 True, SCALE_COL)
             self.screen.blit(txt, (18, self.H - 60))
 

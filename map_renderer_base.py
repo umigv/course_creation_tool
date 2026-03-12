@@ -313,18 +313,18 @@ class MapRendererBase:
         _, block = self._lod()
         merged_cells = {}
         
-        # Merge cells into blocks - obstacles stored as (row, col)
-        for r, c in self.obstacles:
-            br = (r // block) * block
-            bc = (c // block) * block
-            merged_cells[(br, bc)] = True
-        
+        # Merge cells into blocks - obstacles stored as (cx, cy)
+        for cx, cy in self.obstacles:
+            bx = (cx // block) * block
+            by = (cy // block) * block
+            merged_cells[(bx, by)] = True
+
         cell_screen = CELL_M * block * self.ppm
-        
+
         # Draw merged cells
-        for (br, bc) in merged_cells:
-            wx = bc * CELL_M
-            wy = br * CELL_M
+        for (bx, by) in merged_cells:
+            wx = bx * CELL_M
+            wy = by * CELL_M
             sx, sy = self.world_to_screen(wx, wy)
             rect = pygame.Rect(sx, sy, cell_screen, cell_screen)
             pygame.draw.rect(self.screen, OBSTACLE_COLOR, rect)
