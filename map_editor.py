@@ -27,6 +27,11 @@ Controls:
 """
 
 import math, json, os, sys
+
+DATUM_LAT = 42.294621
+DATUM_LON = -83.708112
+DATUM_ALT = 270.0
+_R_EARTH   = 6378137.0
 import pygame
 import argparse
 from map_renderer_base import MapRendererBase, BG_COLOR, CELL_M, DEFAULT_PPM
@@ -434,6 +439,20 @@ class MapEditor:
             self.goals.pop(idx)
 
     # ── File I/O ────────────────────────────────────────────────────────────────
+    def _goal_to_waypoint(self, gx, gy):
+        lat = DATUM_LAT + (gy / _R_EARTH) * (180.0 / math.pi)
+        lon = DATUM_LON + (gx / (_R_EARTH * math.cos(math.radians(DATUM_LAT)))) * (180.0 / math.pi)
+        return {"latitude": lat, "longitude": lon}
+
+    def _save_gps_json(self, map_path):
+        gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
+        data = {
+            "datum": {"latitude": DATUM_LAT, "longitude": DATUM_LON, "altitude": DATUM_ALT},
+            "waypoints": [self._goal_to_waypoint(gx, gy) for gx, gy in self.goals],
+        }
+        with open(gps_path, "w") as f:
+            json.dump(data, f, indent=4)
+
     def _ensure_json_ext(self, path):
         if path and not path.lower().endswith(".json"):
             path += ".json"
@@ -459,8 +478,9 @@ class MapEditor:
             }
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)
+            self._save_gps_json(path)
             self.current_file = path
-            self._status(f"Saved -> {os.path.basename(path)}")
+            self._status(f"Saved -> {os.path.basename(path)} + gps.json")
         except OSError as e:
             # Show error inside the dialog and let user retry with corrected path
             new_path = FileDialog.ask(
