@@ -45,6 +45,7 @@ BTN_IDLE       = ( 58,  64,  82)
 BTN_HOVER      = ( 80,  88, 110)
 BRUSH_DRAW     = ( 72, 108, 230, 100)
 BRUSH_ERASE    = (230,  72,  72, 100)
+BRUSH_LANE     = (210, 170,  35, 100)
 SCALE_COL      = ( 55,  58,  80)
 
 DIALOG_BG      = ( 22,  26,  38)
@@ -58,6 +59,7 @@ DIALOG_ERR     = (220,  80,  80)
 # ── Constants ──────────────────────────────────────────────────────────────────
 PANEL_W      = 240
 MODE_DRAW    = "draw"
+MODE_LANE    = "lane"
 MODE_GOAL    = "goal"
 
 
@@ -392,14 +394,15 @@ class MapEditor:
         wx, wy = self.renderer.screen_to_world(sx, sy)
         cx, cy = self.world_to_base_cell(wx, wy)
         r = self.brush_cells
+        target = self.renderer.lane_lines if self.mode == MODE_LANE else self.renderer.obstacles
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
                 if dx * dx + dy * dy <= r * r:
                     key = (cx + dx, cy + dy)
                     if erase:
-                        self.renderer.obstacles.discard(key)
+                        target.discard(key)
                     else:
-                        self.renderer.obstacles.add(key)
+                        target.add(key)
 
     def paint(self, sx, sy, erase=False):
         """Paint from the last position to (sx, sy), interpolating to fill gaps."""
@@ -449,9 +452,10 @@ class MapEditor:
 
         try:
             data = {
-                "resolution_m":    CELL_M,
-                "obstacles": [list(o) for o in self.renderer.obstacles],
-                "goals":     [list(g) for g in self.goals],
+                "resolution_m": CELL_M,
+                "obstacles":    [list(o) for o in self.renderer.obstacles],
+                "lane_lines":   [list(l) for l in self.renderer.lane_lines],
+                "goals":        [list(g) for g in self.goals],
             }
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)
@@ -508,6 +512,13 @@ class MapEditor:
                 for dy in range(scale):
                     self.renderer.obstacles.add((x0*scale + dx, y0*scale + dy))
 
+        self.renderer.lane_lines = set()
+        for l in data.get("lane_lines", []):
+            x0, y0 = int(l[0]), int(l[1])
+            for dx in range(scale):
+                for dy in range(scale):
+                    self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
+
         self.goals        = [tuple(g) for g in data.get("goals", [])]
         self.current_file = path
         self._status(f"Loaded <- {os.path.basename(path)}")
@@ -519,7 +530,7 @@ class MapEditor:
     # ── Undo / redo ─────────────────────────────────────────────────────────────
     def _push_history(self):
         """Save current state onto the undo stack and clear the redo stack."""
-        entry = (frozenset(self.renderer.obstacles), tuple(self.goals))
+        entry = (frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
         if self._undo_stack and self._undo_stack[-1] == entry:
             return  # nothing changed — don't create a duplicate entry
         self._undo_stack.append(entry)
@@ -528,23 +539,25 @@ class MapEditor:
         self._redo_stack.clear()
 
     def _restore(self, entry):
-        obs, goals = entry
-        self.renderer.obstacles = set(obs)
-        self.goals     = list(goals)
+        obs, lanes, goals = entry
+        self.renderer.obstacles  = set(obs)
+        self.renderer.lane_lines = set(lanes)
+        self.goals = list(goals)
+
+    def _current_state(self):
+        return (frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
 
     def undo(self):
         if not self._undo_stack:
             self._status("Nothing to undo.", 1.5); return
-        current = (frozenset(self.renderer.obstacles), tuple(self.goals))
-        self._redo_stack.append(current)
+        self._redo_stack.append(self._current_state())
         self._restore(self._undo_stack.pop())
         self._status("Undo", 1.0)
 
     def redo(self):
         if not self._redo_stack:
             self._status("Nothing to redo.", 1.5); return
-        current = (frozenset(self.renderer.obstacles), tuple(self.goals))
-        self._undo_stack.append(current)
+        self._undo_stack.append(self._current_state())
         self._restore(self._redo_stack.pop())
         self._status("Redo", 1.0)
 
@@ -552,6 +565,7 @@ class MapEditor:
     def draw(self):
         self.screen.fill(BG_COLOR)
         self.renderer.draw_obstacles()
+        self.renderer.draw_lane_lines()
         self._draw_goals()
         self._draw_brush_preview()
         self.renderer.draw_grid()  # Draw grid on top
@@ -576,15 +590,18 @@ class MapEditor:
     def _draw_brush_preview(self):
         mx, my = pygame.mouse.get_pos()
         if mx >= self.canvas_W: return
-        if self.mode == MODE_DRAW:
+        if self.mode in (MODE_DRAW, MODE_LANE):
             r_px = max(2, int((self.brush_cells + 0.5) * CELL_M * self.renderer.ppm))
-            col  = BRUSH_ERASE if self.erasing else BRUSH_DRAW
+            if self.erasing:
+                fill_col, ring_col = BRUSH_ERASE, (200, 60, 60)
+            elif self.mode == MODE_LANE:
+                fill_col, ring_col = BRUSH_LANE, (180, 145, 25)
+            else:
+                fill_col, ring_col = BRUSH_DRAW, (60, 80, 200)
             surf = pygame.Surface((r_px*2+4, r_px*2+4), pygame.SRCALPHA)
-            pygame.draw.circle(surf, col, (r_px+2, r_px+2), r_px)
+            pygame.draw.circle(surf, fill_col, (r_px+2, r_px+2), r_px)
             self.screen.blit(surf, (mx-r_px-2, my-r_px-2))
-            pygame.draw.circle(self.screen,
-                               (200,60,60) if self.erasing else (60,80,200),
-                               (mx, my), r_px, 1)
+            pygame.draw.circle(self.screen, ring_col, (mx, my), r_px, 1)
         else:
             ri = max(7, min(26, int(CELL_M * self.renderer.ppm)))
             pygame.draw.circle(self.screen, GOAL_FILL, (mx, my), ri, 2)
@@ -637,8 +654,10 @@ class MapEditor:
         bw = panel_w - int(20 * ui_scale)
         hw = (bw - int(6 * ui_scale)) // 2  # half-width for side-by-side buttons
 
-        self.btn_draw   = Button((px,  int(48 * ui_scale), bw, int(36 * ui_scale)), "Draw Obstacles", active=(self.mode==MODE_DRAW))
-        self.btn_goal   = Button((px,  int(90 * ui_scale), bw, int(36 * ui_scale)), "Place Goals",    active=(self.mode==MODE_GOAL))
+        self.btn_draw   = Button((px,  int(48 * ui_scale), bw, int(36 * ui_scale)), "Draw Obstacles",  active=(self.mode==MODE_DRAW))
+        self.btn_lane   = Button((px,  int(90 * ui_scale), bw, int(36 * ui_scale)), "Draw Lane Lines", active=(self.mode==MODE_LANE),
+                                 color_active=(180, 145, 25))
+        self.btn_goal   = Button((px, int(132 * ui_scale), bw, int(36 * ui_scale)), "Place Goals",     active=(self.mode==MODE_GOAL))
 
         # File operations — start AFTER the info-text block (sep at 196, text 142-192)
         self.btn_save   = Button((px, int(204 * ui_scale), bw, int(32 * ui_scale)), "Save")
@@ -653,7 +672,7 @@ class MapEditor:
         self.btn_clear  = Button((px, int(386 * ui_scale), bw, int(32 * ui_scale)), "Clear All",
                                  color_active=(200, 60, 60))
 
-        self.buttons = [self.btn_draw, self.btn_goal,
+        self.buttons = [self.btn_draw, self.btn_lane, self.btn_goal,
                         self.btn_save, self.btn_saveas, self.btn_load,
                         self.btn_undo, self.btn_redo,
                         self.btn_clear]
@@ -673,6 +692,7 @@ class MapEditor:
 
         # Buttons (not scrolled)
         self.btn_draw.active = self.mode == MODE_DRAW
+        self.btn_lane.active = self.mode == MODE_LANE
         self.btn_goal.active = self.mode == MODE_GOAL
         for btn in self.buttons:
             btn.update(mpos)
@@ -711,8 +731,9 @@ class MapEditor:
         
         # Mode/brush info
         sep(4)
-        lbl(f"Mode  : {'DRAW' if self.mode==MODE_DRAW else 'GOAL'}")
-        if self.mode == MODE_DRAW:
+        mode_label = {MODE_DRAW: "OBSTACLES", MODE_LANE: "LANE LINES", MODE_GOAL: "GOAL"}[self.mode]
+        lbl(f"Mode  : {mode_label}")
+        if self.mode in (MODE_DRAW, MODE_LANE):
             diam_m = (self.brush_cells * 2 + 1) * CELL_M
             lbl(f"Brush : r={self.brush_cells} ({diam_m:.2f} m diam)")
             lbl("  [ / ]  to resize", PANEL_DIM)
@@ -724,6 +745,7 @@ class MapEditor:
         lbl(f"LOD   : {level}  ({block}x{block} cells merged)")
         lbl(f"Display cell = {CELL_M*block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
+        lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
         lbl(f"Goals     : {len(self.goals)}")
         lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
         lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)")
@@ -777,7 +799,7 @@ class MapEditor:
             ("Scroll",    "Zoom (canvas) / Scroll (panel)"),
             ("Slider",    "UI Scale"),
             ("[ / ]",     "Brush size"),
-            ("Tab",       "Toggle mode"),
+            ("Tab",       "Cycle mode (obs/lane/goal)"),
             ("Ctrl+Z/Y",  "Undo / Redo"),
             ("S",         "Save"),
             ("Ctrl+S",    "Save as..."),
@@ -970,14 +992,19 @@ class MapEditor:
             if ctrl or self.current_file is None: self.save(force_dialog=True)
             else:                                  self.save(self.current_file)
         elif k == pygame.K_l:   self.load()
-        elif k == pygame.K_TAB: self.mode = MODE_GOAL if self.mode==MODE_DRAW else MODE_DRAW
+        elif k == pygame.K_TAB:
+            if   self.mode == MODE_DRAW: self.mode = MODE_LANE
+            elif self.mode == MODE_LANE: self.mode = MODE_GOAL
+            else:                        self.mode = MODE_DRAW
         elif k == pygame.K_LEFTBRACKET:  self.brush_cells = max(0, self.brush_cells - 1)
         elif k == pygame.K_RIGHTBRACKET: self.brush_cells = min(500, self.brush_cells + 1)
         elif k == pygame.K_r:   self.renderer.reset_view()
         elif k in (pygame.K_DELETE, pygame.K_BACKSPACE):
             self._push_history()
-            self.renderer.obstacles.clear(); self.goals.clear()
-            self._status("Cleared all obstacles and goals.")
+            self.renderer.obstacles.clear()
+            self.renderer.lane_lines.clear()
+            self.goals.clear()
+            self._status("Cleared all obstacles, lane lines, and goals.")
         elif k == pygame.K_ESCAPE: return False
         return True
 
@@ -1000,6 +1027,7 @@ class MapEditor:
         
         # Then check buttons
         if   self.btn_draw.hit(event):   self.mode = MODE_DRAW
+        elif self.btn_lane.hit(event):   self.mode = MODE_LANE
         elif self.btn_goal.hit(event):   self.mode = MODE_GOAL
         elif self.btn_save.hit(event):
             self.save(self.current_file if self.current_file else None)
@@ -1009,15 +1037,17 @@ class MapEditor:
         elif self.btn_redo.hit(event):   self.redo()
         elif self.btn_clear.hit(event):
             self._push_history()
-            self.renderer.obstacles.clear(); self.goals.clear()
-            self._status("Cleared all obstacles and goals.")
+            self.renderer.obstacles.clear()
+            self.renderer.lane_lines.clear()
+            self.goals.clear()
+            self._status("Cleared all obstacles, lane lines, and goals.")
 
     def _on_canvas_press(self, event):
         mx, my = event.pos
         alt_held = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
         if event.button == 2 or (event.button == 1 and alt_held):
             self.renderer.start_pan(event.pos)
-        elif self.mode == MODE_DRAW:
+        elif self.mode in (MODE_DRAW, MODE_LANE):
             if   event.button == 1:
                 self._push_history()
                 self._last_paint_pos = None

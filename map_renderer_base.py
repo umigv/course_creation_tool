@@ -14,7 +14,8 @@ GRID_MINOR     = (215, 215, 230)
 GRID_MAJOR     = (165, 165, 190)
 GRID_SUPER     = (120, 120, 155)
 AXIS_COLOR     = (120, 120, 155)
-OBSTACLE_COLOR = (42, 45, 68)
+OBSTACLE_COLOR   = (42, 45, 68)
+LANE_LINE_COLOR  = (210, 170, 35)
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -133,8 +134,9 @@ class MapRendererBase:
         self.pan_start = (0, 0)
         self.pan_cam_orig = (0.0, 0.0)
         
-        # Obstacles (shared state)
-        self.obstacles = set()
+        # Map layer state
+        self.obstacles  = set()
+        self.lane_lines = set()
     
     def _lod(self):
         """
@@ -308,23 +310,24 @@ class MapRendererBase:
         pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, H), axis_line_width)
         pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (W, y0), axis_line_width)
     
-    def draw_obstacles(self):
-        """Draw obstacle cells with LOD merging"""
+    def _draw_cells(self, cells: set, color: tuple) -> None:
+        """Draw a set of grid cells with LOD merging."""
         _, block = self._lod()
         merged_cells = {}
-        
-        # Merge cells into blocks - obstacles stored as (cx, cy)
-        for cx, cy in self.obstacles:
+        for cx, cy in cells:
             bx = (cx // block) * block
             by = (cy // block) * block
             merged_cells[(bx, by)] = True
 
         cell_screen = CELL_M * block * self.ppm
+        for bx, by in merged_cells:
+            sx, sy = self.world_to_screen(bx * CELL_M, by * CELL_M)
+            pygame.draw.rect(self.screen, color, pygame.Rect(sx, sy, cell_screen, cell_screen))
 
-        # Draw merged cells
-        for (bx, by) in merged_cells:
-            wx = bx * CELL_M
-            wy = by * CELL_M
-            sx, sy = self.world_to_screen(wx, wy)
-            rect = pygame.Rect(sx, sy, cell_screen, cell_screen)
-            pygame.draw.rect(self.screen, OBSTACLE_COLOR, rect)
+    def draw_obstacles(self):
+        """Draw obstacle cells with LOD merging."""
+        self._draw_cells(self.obstacles, OBSTACLE_COLOR)
+
+    def draw_lane_lines(self):
+        """Draw lane-line cells with LOD merging (distinct color, no shadow)."""
+        self._draw_cells(self.lane_lines, LANE_LINE_COLOR)
