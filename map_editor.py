@@ -732,7 +732,7 @@ class MapEditor:
         draw_separator(8)
         folder = os.path.basename(os.path.dirname(self.current_file)) if self.current_file else "(unsaved)"
         lbl(f"Folder: {folder}", PANEL_DIMMED)
-        if not self.waypoints:
+        if len(self.waypoints) == 0:
             waypoint_format = "(no waypoints)"
         elif all(waypoint.is_local for waypoint in self.waypoints):
             waypoint_format = "local (x/y)"
