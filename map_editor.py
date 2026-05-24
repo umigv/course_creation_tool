@@ -401,14 +401,15 @@ class MapEditor:
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
         file_waypoints = []
-        for waypoint in self.file_waypoints:
+        for waypoint in self.waypoints:
+            file_waypoint = {}
             if waypoint.is_local:
-                waypoint = {"x": waypoint.x, "y": waypoint.y}
+                file_waypoint = {"x": waypoint.x, "y": waypoint.y}
             else:
-                waypoint = self._gps_waypoint_to_file_gps_waypoint(waypoint.x, waypoint.y)
+                file_waypoint = self._gps_waypoint_to_file_gps_waypoint(waypoint.x, waypoint.y)
             if waypoint.no_mans_land:
-                waypoint["no_mans_land"] = True
-            file_waypoints.append(waypoint)
+                file_waypoint["no_mans_land"] = True
+            file_waypoints.append(file_waypoint)
         data = {
             "datum": {"latitude": DATUM_LATITUDE, "longitude": DATUM_LONGITUDE, "altitude": DATUM_ALTITUDE},
             "waypoints": file_waypoints,
