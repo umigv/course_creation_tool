@@ -156,20 +156,20 @@ class MapRendererBase:
             pixels_per_cell = self.ppm * CELL_RESOLUTION * block
         return level, block
     
-    def world_to_screen(self, wx, wy):
+    def world_to_screen(self, world_x, world_y):
         """
         Convert world coordinates (meters) to screen pixels.
         Note: Screen Y increases downward, so we negate world Y.
         
         Args:
-            wx, wy: World coordinates in meters
+            world_x, world_y: World coordinates in meters
             
         Returns:
             (sx, sy): Screen coordinates in pixels
         """
         W, H = self.screen.get_size()
-        sx = (wx - self.cam_x) * self.ppm + W / 2
-        sy = -(wy - self.cam_y) * self.ppm + H / 2  # Negate Y for screen coords
+        sx = (world_x - self.cam_x) * self.ppm + W / 2
+        sy = -(world_y - self.cam_y) * self.ppm + H / 2  # Negate Y for screen coords
         return sx, sy
     
     def screen_to_world(self, sx, sy):
@@ -181,12 +181,12 @@ class MapRendererBase:
             sx, sy: Screen coordinates in pixels
             
         Returns:
-            (wx, wy): World coordinates in meters
+            (world_x, world_y): World coordinates in meters
         """
         W, H = self.screen.get_size()
-        wx = (sx - W / 2) / self.ppm + self.cam_x
-        wy = -(sy - H / 2) / self.ppm + self.cam_y  # Negate Y for world coords
-        return wx, wy
+        world_x = (sx - W / 2) / self.ppm + self.cam_x
+        world_y = -(sy - H / 2) / self.ppm + self.cam_y  # Negate Y for world coords
+        return world_x, world_y
     
     def zoom(self, delta, mx, my):
         """
@@ -197,7 +197,7 @@ class MapRendererBase:
             mx, my: Mouse position in screen coordinates
         """
         # Store world position under mouse before zoom
-        wx, wy = self.screen_to_world(mx, my)
+        world_x, world_y = self.screen_to_world(mx, my)
         
         # Apply zoom
         old_ppm = self.ppm
@@ -207,7 +207,7 @@ class MapRendererBase:
         # Adjust camera so world position stays under mouse
         if self.ppm != old_ppm:
             # After zoom, where would that world point appear on screen?
-            sx_new, sy_new = self.world_to_screen(wx, wy)
+            sx_new, sy_new = self.world_to_screen(world_x, world_y)
             
             # Calculate how much it shifted
             dx_screen = sx_new - mx
