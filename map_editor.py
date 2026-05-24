@@ -28,6 +28,7 @@ Controls:
 """
 
 import math, json, os, sys, subprocess
+from dataclasses import dataclass
 
 DATUM_LATITUDE = 42.294621
 DATUM_LONGITUDE = -83.708112
@@ -61,6 +62,21 @@ PANEL_WIDTH      = 240
 MODE_DRAW    = "draw"
 MODE_LANE    = "lane"
 MODE_GOAL    = "goal"
+
+
+@dataclass(frozen=True)
+class Goal:
+    x: float
+    y: float
+    no_mans_land: bool = False
+    is_local: bool = False
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    obstacles: frozenset
+    lane_lines: frozenset
+    goals: tuple
 
 
 def _dump_compact_arrays(obj, indent=2):
@@ -251,7 +267,7 @@ class MapEditor:
         # Initialize renderer
         self.renderer = EditorRenderer(self.screen, self.canvas_width, DEFAULT_PPM, scale_factor)
 
-        self.goals: list     = []      # world metres (x, y, no_mans_land, is_local)
+        self.goals: list[Goal] = []
 
         self.mode          = MODE_DRAW
         self.brush_radius   = 1
@@ -262,9 +278,9 @@ class MapEditor:
         self.status_msg    = ""
         self.status_timer  = 0
 
-        # Undo / redo stacks — each entry is (frozenset_obstacles, tuple_goals)
-        self._undo_stack: list = []
-        self._redo_stack: list = []
+        # Undo / redo stacks
+        self._undo_stack: list[HistoryEntry] = []
+        self._redo_stack: list[HistoryEntry] = []
         self._MAX_HISTORY = 64
         
         # UI Scale slider
@@ -339,16 +355,16 @@ class MapEditor:
 
     def place_goal(self, screen_x, screen_y, no_mans_land=False):
         world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
-        is_local = bool(self.goals) and all(g[3] for g in self.goals)
-        self.goals.append((world_x, world_y, no_mans_land, is_local))
+        is_local = bool(self.goals) and all(g.is_local for g in self.goals)
+        self.goals.append(Goal(world_x, world_y, no_mans_land, is_local))
 
     def remove_nearest_goal(self, screen_x, screen_y):
         if not self.goals: return
         world_x, world_y    = self.renderer.screen_to_world(screen_x, screen_y)
         threshold = 25 / self.renderer.ppm
         idx = min(range(len(self.goals)),
-                  key=lambda i: (self.goals[i][0]-world_x)**2 + (self.goals[i][1]-world_y)**2)
-        if math.hypot(self.goals[idx][0]-world_x, self.goals[idx][1]-world_y) <= threshold:
+                  key=lambda i: (self.goals[i].x - world_x)**2 + (self.goals[i].y - world_y)**2)
+        if math.hypot(self.goals[idx].x - world_x, self.goals[idx].y - world_y) <= threshold:
             self.goals.pop(idx)
 
     # ── File I/O ────────────────────────────────────────────────────────────────
@@ -378,19 +394,19 @@ class MapEditor:
         waypoints = data.get("waypoints", [])
         datum = data.get("datum")
         self.goals = [
-            (*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)), "x" in waypoint)
+            Goal(*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)), "x" in waypoint)
             for waypoint in waypoints
         ]
 
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
         waypoints = []
-        for goal_x, goal_y, no_mans_land, is_local in self.goals:
-            if is_local:
-                waypoint = {"x": goal_x, "y": goal_y}
+        for goal in self.goals:
+            if goal.is_local:
+                waypoint = {"x": goal.x, "y": goal.y}
             else:
-                waypoint = self._goal_to_waypoint(goal_x, goal_y)
-            if no_mans_land:
+                waypoint = self._goal_to_waypoint(goal.x, goal.y)
+            if goal.no_mans_land:
                 waypoint["no_mans_land"] = True
             waypoints.append(waypoint)
         data = {
@@ -475,7 +491,7 @@ class MapEditor:
                 for dy in range(scale):
                     self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
 
-        self.goals        = [(g[0], g[1], g[2], g[3] if len(g) > 3 else False) for g in data.get("goals", [])]
+        self.goals        = [Goal(g[0], g[1], bool(g[2]), bool(g[3]) if len(g) > 3 else False) for g in data.get("goals", [])]
         self._load_gps_json(path)
         self.current_file = path
         self._status(f"Loaded <- {os.path.basename(os.path.dirname(path))}/")
@@ -487,7 +503,7 @@ class MapEditor:
     # ── Undo / redo ─────────────────────────────────────────────────────────────
     def _push_history(self):
         """Save current state onto the undo stack and clear the redo stack."""
-        entry = (frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
+        entry = HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
         if self._undo_stack and self._undo_stack[-1] == entry:
             return  # nothing changed — don't create a duplicate entry
         self._undo_stack.append(entry)
@@ -495,14 +511,13 @@ class MapEditor:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
 
-    def _restore(self, entry):
-        obs, lanes, goals = entry
-        self.renderer.obstacles  = set(obs)
-        self.renderer.lane_lines = set(lanes)
-        self.goals = list(goals)
+    def _restore(self, entry: HistoryEntry):
+        self.renderer.obstacles  = set(entry.obstacles)
+        self.renderer.lane_lines = set(entry.lane_lines)
+        self.goals = list(entry.goals)
 
-    def _current_state(self):
-        return (frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
+    def _current_state(self) -> HistoryEntry:
+        return HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
 
     def undo(self):
         if not self._undo_stack:
@@ -535,14 +550,14 @@ class MapEditor:
     def _draw_goals(self):
         radius_px = max(7, min(26, CELL_RESOLUTION * 1.0 * self.renderer.ppm))
         radius_int = int(radius_px)
-        for goal_x, goal_y, no_mans_land, *_ in self.goals:
-            screen_x, screen_y = self.renderer.world_to_screen(goal_x, goal_y)
+        for goal in self.goals:
+            screen_x, screen_y = self.renderer.world_to_screen(goal.x, goal.y)
             si, sj = int(screen_x), int(screen_y)
             if -radius_int <= si <= self.canvas_width + radius_int and -radius_int <= sj <= self.height + radius_int:
-                fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if no_mans_land else (GOAL_FILL, GOAL_RING)
+                fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if goal.no_mans_land else (GOAL_FILL, GOAL_RING)
                 pygame.draw.circle(self.screen, fill, (si, sj), radius_int)
                 pygame.draw.circle(self.screen, ring, (si, sj), radius_int, 2)
-                if no_mans_land:
+                if goal.no_mans_land:
                     d = int(radius_int * 0.65)
                     pygame.draw.line(self.screen, ring, (si-d, sj-d), (si+d, sj+d), 2)
                     pygame.draw.line(self.screen, ring, (si+d, sj-d), (si-d, sj+d), 2)
@@ -709,7 +724,7 @@ class MapEditor:
         lbl(f"Display cell = {CELL_RESOLUTION*block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
         lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
-        no_mans_land_count = sum(1 for g in self.goals if g[2])
+        no_mans_land_count = sum(1 for g in self.goals if g.no_mans_land)
         lbl(f"Goals     : {len(self.goals)}  ({no_mans_land_count} No Man's Land)")
         lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
         lbl(f"Base cell : {CELL_RESOLUTION*100:.0f} cm (fixed)")
@@ -719,9 +734,9 @@ class MapEditor:
         lbl(f"Folder: {folder}", PANEL_DIMMED)
         if not self.goals:
             gps_format = "(no waypoints)"
-        elif all(g[3] for g in self.goals):
+        elif all(g.is_local for g in self.goals):
             gps_format = "local (x/y)"
-        elif any(g[3] for g in self.goals):
+        elif any(g.is_local for g in self.goals):
             gps_format = "mixed"
         else:
             gps_format = "lat/lon"
