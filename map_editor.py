@@ -19,14 +19,14 @@ Controls:
   [ / ]           -> shrink / grow brush
   Ctrl+Z          -> undo
   Ctrl+Y          -> redo
-  S               -> save  (quick-save if file known, else prompts)
-  Ctrl+S          -> save-as (always prompts)
-  L               -> load (prompts for filename)
+  S               -> save  (quick-save to current folder, else prompts)
+  Ctrl+S          -> save-as (always prompts for folder)
+  L               -> load (prompts for course folder)
   R               -> reset view to origin
   Delete          -> clear all
 """
 
-import math, json, os, sys
+import math, json, os, sys, subprocess
 
 DATUM_LAT = 42.294621
 DATUM_LON = -83.708112
@@ -53,14 +53,6 @@ BRUSH_ERASE    = (230,  72,  72, 100)
 BRUSH_LANE     = (210, 170,  35, 100)
 SCALE_COL      = ( 55,  58,  80)
 
-DIALOG_BG      = ( 22,  26,  38)
-DIALOG_BORDER  = ( 72, 136, 255)
-DIALOG_INPUT   = ( 38,  44,  60)
-DIALOG_CURSOR  = (160, 200, 255)
-DIALOG_OK      = ( 60, 160,  80)
-DIALOG_CANCEL  = (160,  60,  60)
-DIALOG_ERR     = (220,  80,  80)
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 PANEL_W      = 240
 MODE_DRAW    = "draw"
@@ -84,130 +76,33 @@ def _dump_compact_arrays(obj, indent=2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# In-pygame file dialog
+# Native GTK file dialogs (Ubuntu 22)
 # ─────────────────────────────────────────────────────────────────────────────
-class FileDialog:
-    """
-    Blocking modal text-entry dialog drawn directly onto the pygame surface.
-    Call FileDialog.ask(...) which spins its own mini event loop and returns
-    a string (the typed path) or None if cancelled.
-    """
+def _zenity(*args):
+    """Run zenity, pumping pygame events so X11 stays alive and zenity gets focus."""
+    import pygame
+    try:
+        proc = subprocess.Popen(["zenity", *args],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return None, -1
+    while proc.poll() is None:
+        pygame.event.pump()
+        pygame.time.wait(30)
+    stdout, _ = proc.communicate()
+    return stdout.decode().strip(), proc.returncode
 
-    @staticmethod
-    def ask(screen, font_m, font_s, title="Enter filename",
-            initial="", error=""):
-        """
-        Runs a modal input loop.  Returns the entered string or None.
-        """
-        clock   = pygame.time.Clock()
-        text    = initial
-        cursor_on    = True
-        cursor_timer = 0
-        err_msg = error
 
-        SW, SH = screen.get_size()
-        W, H   = min(620, SW - 40), 200
-        x      = (SW - W) // 2
-        y      = (SH - H) // 2
+def _native_folder_dialog(title="Select course folder", initial_dir=None):
+    cmd = ["--file-selection", "--directory", "--title", title]
+    if initial_dir and os.path.isdir(initial_dir):
+        cmd += ["--filename", initial_dir.rstrip("/") + "/"]
+    text, code = _zenity(*cmd)
+    return text or None if code == 0 else None
 
-        # Button rects (local coords inside dialog)
-        ok_rect     = pygame.Rect(W - 190, H - 52, 82, 34)
-        cancel_rect = pygame.Rect(W -  98, H - 52, 82, 34)
-        input_rect  = pygame.Rect(16, 80, W - 32, 36)
 
-        while True:
-            clock.tick(60)
-            cursor_timer += 1
-            if cursor_timer >= 30:
-                cursor_on    = not cursor_on
-                cursor_timer = 0
-
-            # ── Draw overlay ────────────────────────────────────────────────
-            overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 160))
-            screen.blit(overlay, (0, 0))
-
-            # Dialog box
-            box = pygame.Rect(x, y, W, H)
-            pygame.draw.rect(screen, DIALOG_BG, box, border_radius=12)
-            pygame.draw.rect(screen, DIALOG_BORDER, box, 2, border_radius=12)
-
-            # Title
-            t = font_m.render(title, True, PANEL_FG)
-            screen.blit(t, (x + 16, y + 16))
-
-            # Hint
-            h = font_s.render("Press Enter to confirm, Esc to cancel", True, PANEL_DIM)
-            screen.blit(h, (x + 16, y + 46))
-
-            # Input box
-            ib = input_rect.move(x, y)
-            pygame.draw.rect(screen, DIALOG_INPUT, ib, border_radius=6)
-            pygame.draw.rect(screen, DIALOG_BORDER, ib, 1, border_radius=6)
-
-            # Clip text to fit box width
-            max_w   = ib.width - 20
-            display = text
-            while font_s.size(display)[0] > max_w and display:
-                display = display[1:]
-
-            txt_surf = font_s.render(display, True, PANEL_FG)
-            screen.blit(txt_surf, (ib.x + 8, ib.y + 10))
-
-            # Cursor
-            if cursor_on:
-                cx = ib.x + 8 + font_s.size(display)[0]
-                pygame.draw.line(screen, DIALOG_CURSOR,
-                                 (cx, ib.y + 8), (cx, ib.y + 26), 2)
-
-            # Error message
-            if err_msg:
-                e = font_s.render(err_msg, True, DIALOG_ERR)
-                screen.blit(e, (x + 16, y + 122))
-
-            # Buttons
-            mx, my = pygame.mouse.get_pos()
-
-            def btn(rect_local, label, base_col):
-                r = rect_local.move(x, y)
-                hover = r.collidepoint(mx, my)
-                col   = tuple(min(255, c + 30) for c in base_col) if hover else base_col
-                pygame.draw.rect(screen, col, r, border_radius=7)
-                s = font_s.render(label, True, (240, 240, 240))
-                screen.blit(s, s.get_rect(center=r.center))
-                return r
-
-            ok_r     = btn(ok_rect,     "OK",     DIALOG_OK)
-            cancel_r = btn(cancel_rect, "Cancel", DIALOG_CANCEL)
-
-            pygame.display.flip()
-
-            # ── Events ──────────────────────────────────────────────────────
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit(); sys.exit(0)
-
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        return None
-                    elif event.key == pygame.K_RETURN:
-                        result = text.strip()
-                        return result if result else None
-                    elif event.key == pygame.K_BACKSPACE:
-                        text = text[:-1]
-                        err_msg = ""
-                    else:
-                        ch = event.unicode
-                        if ch and ch.isprintable():
-                            text   += ch
-                            err_msg = ""
-
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if ok_r.collidepoint(event.pos):
-                        result = text.strip()
-                        return result if result else None
-                    elif cancel_r.collidepoint(event.pos):
-                        return None
+def _native_error(title, message):
+    _zenity("--error", "--no-wrap", "--title", title, "--text", message)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,22 +392,29 @@ class MapEditor:
         with open(gps_path, "w") as f:
             json.dump(data, f, indent=4)
 
-    def _ensure_json_ext(self, path):
-        if path and not path.lower().endswith(".json"):
-            path += ".json"
-        return path
+    def _course_dir(self):
+        """Return the directory of the current course, or cwd if none loaded."""
+        if self.current_file:
+            return os.path.dirname(os.path.abspath(self.current_file))
+        return os.getcwd()
 
-    def save(self, path=None, force_dialog=False):
-        if path is None or force_dialog:
-            initial = os.path.basename(path or self.current_file or "map.json")
-            path = FileDialog.ask(
-                self.screen, self.font_m, self.font_s,
-                title="Save map — enter filename",
-                initial=initial)
-            if path is None:
+    def _flush_input(self):
+        """Discard queued events and reset paint state after a dialog steals focus."""
+        self.drawing = False
+        self.erasing = False
+        self._last_paint_pos = None
+        pygame.event.clear()
+
+    def save(self, folder=None, force_dialog=False):
+        if folder is None or force_dialog:
+            folder = _native_folder_dialog("Select course folder to save", self._course_dir())
+            self._flush_input()
+            if folder is None:
                 return
-            path = self._ensure_json_ext(path)
+        elif os.path.isfile(folder):
+            folder = os.path.dirname(os.path.abspath(folder))
 
+        path = os.path.join(folder, "map.json")
         try:
             data = {
                 "resolution_m": CELL_M,
@@ -523,46 +425,29 @@ class MapEditor:
                 f.write(_dump_compact_arrays(data))
             self._save_gps_json(path)
             self.current_file = path
-            self._status(f"Saved -> {os.path.basename(path)} + gps.json")
+            self._status(f"Saved -> {os.path.basename(folder)}/")
         except OSError as e:
-            # Show error inside the dialog and let user retry with corrected path
-            new_path = FileDialog.ask(
-                self.screen, self.font_m, self.font_s,
-                title="Save map — enter filename",
-                initial=path,
-                error=f"Error: {e}")
-            if new_path:
-                self.save(self._ensure_json_ext(new_path))
+            _native_error("Save failed", str(e))
 
     def load(self, path=None):
         if path is None:
-            path = FileDialog.ask(
-                self.screen, self.font_m, self.font_s,
-                title="Load map — enter filename",
-                initial=os.path.basename(self.current_file or "map.json"))
-            if path is None:
+            folder = _native_folder_dialog("Select course folder to load", self._course_dir())
+            self._flush_input()
+            if folder is None:
                 return
-            path = self._ensure_json_ext(path)
+            path = os.path.join(folder, "map.json")
+        elif os.path.isdir(path):
+            path = os.path.join(path, "map.json")
 
         if not os.path.isfile(path):
-            new_path = FileDialog.ask(
-                self.screen, self.font_m, self.font_s,
-                title="Load map — enter filename",
-                initial=path,
-                error=f"File not found: {path}")
-            if new_path:
-                self.load(self._ensure_json_ext(new_path))
+            _native_error("map.json not found", f"No map.json in:\n{os.path.dirname(path)}")
             return
 
         try:
             with open(path) as f:
                 data = json.load(f)
         except Exception as e:
-            FileDialog.ask(
-                self.screen, self.font_m, self.font_s,
-                title="Load failed — press Esc to close",
-                initial="",
-                error=str(e))
+            _native_error("Load failed", str(e))
             return
 
         saved_cm = float(data.get("resolution_m", CELL_M))
@@ -585,7 +470,7 @@ class MapEditor:
         self.goals        = [tuple(g) for g in data.get("goals", [])]
         self._load_gps_json(path)
         self.current_file = path
-        self._status(f"Loaded <- {os.path.basename(path)}")
+        self._status(f"Loaded <- {os.path.basename(os.path.dirname(path))}/")
 
     def _status(self, msg, secs=3.0):
         self.status_msg   = msg
@@ -815,8 +700,8 @@ class MapEditor:
         lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)")
 
         sep(8)
-        fn = os.path.basename(self.current_file) if self.current_file else "(unsaved)"
-        lbl(f"File: {fn}", PANEL_DIM)
+        folder = os.path.basename(os.path.dirname(self.current_file)) if self.current_file else "(unsaved)"
+        lbl(f"Folder: {folder}", PANEL_DIM)
         gps_fmt = "local (x/y)" if self.gps_local_mode else "GPS (lat/lon)"
         lbl(f"GPS : {gps_fmt}", PANEL_DIM)
         
@@ -1141,11 +1026,11 @@ class MapEditor:
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(description="5 cm/cell grid map editor")
-    p.add_argument("file", nargs="?", help="JSON map file to open on startup")
+    p.add_argument("path", nargs="?", help="Course folder (or map.json) to open on startup")
     args = p.parse_args()
     editor = MapEditor()
-    if args.file and os.path.isfile(args.file):
-        editor.load(args.file)
+    if args.path and (os.path.isdir(args.path) or os.path.isfile(args.path)):
+        editor.load(args.path)
     editor.run()
 
 if __name__ == "__main__":
