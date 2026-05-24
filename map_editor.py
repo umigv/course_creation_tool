@@ -29,35 +29,35 @@ Controls:
 
 import math, json, os, sys, subprocess
 
-DATUM_LAT = 42.294621
-DATUM_LON = -83.708112
-DATUM_ALT = 270.0
-_R_EARTH   = 6378137.0
+DATUM_LATITUDE = 42.294621
+DATUM_LONGITUDE = -83.708112
+DATUM_ALTITUDE = 270.0
+EARTH_RADIUS   = 6378137.0
 import pygame
 import argparse
-from map_renderer_base import MapRendererBase, BG_COLOR, CELL_M, DEFAULT_PPM
+from map_renderer_base import MapRendererBase, BACKGROUND_COLOR, CELL_RESOLUTION, DEFAULT_PPM
 from dpi_utils import setup_pygame_dpi_awareness
 
 
 # ── Additional Palette for Editor ────────────────────────────────────────────
 GOAL_FILL      = (240,  65,  65)
 GOAL_RING      = (170,   0,   0)
-NML_FILL       = (180,  80, 220)
-NML_RING       = (110,  30, 160)
-PANEL_BG       = ( 32,  36,  48)
-PANEL_FG       = (218, 224, 238)
-PANEL_DIM      = (110, 118, 140)
-PANEL_SEP      = ( 55,  62,  78)
-BTN_ACTIVE     = ( 72, 136, 255)
-BTN_IDLE       = ( 58,  64,  82)
-BTN_HOVER      = ( 80,  88, 110)
+NO_MANS_LAND_FILL       = (180,  80, 220)
+NO_MANS_LAND_RING       = (110,  30, 160)
+PANEL_BACKGROUND       = ( 32,  36,  48)
+PANEL_FOREGROUND       = (218, 224, 238)
+PANEL_DIMMED      = (110, 118, 140)
+PANEL_SEPARATOR      = ( 55,  62,  78)
+BUTTON_ACTIVE     = ( 72, 136, 255)
+BUTTON_IDLE       = ( 58,  64,  82)
+BUTTON_HOVER      = ( 80,  88, 110)
 BRUSH_DRAW     = ( 72, 108, 230, 100)
 BRUSH_ERASE    = (230,  72,  72, 100)
 BRUSH_LANE     = (210, 170,  35, 100)
-SCALE_COL      = ( 55,  58,  80)
+SCALE_COLOR      = ( 55,  58,  80)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-PANEL_W      = 240
+PANEL_WIDTH      = 240
 MODE_DRAW    = "draw"
 MODE_LANE    = "lane"
 MODE_GOAL    = "goal"
@@ -97,10 +97,10 @@ def _zenity(*args):
 
 
 def _native_folder_dialog(title="Select course folder", initial_dir=None):
-    cmd = ["--file-selection", "--directory", "--title", title]
+    command = ["--file-selection", "--directory", "--title", title]
     if initial_dir and os.path.isdir(initial_dir):
-        cmd += ["--filename", initial_dir.rstrip("/") + "/"]
-    text, code = _zenity(*cmd)
+        command += ["--filename", initial_dir.rstrip("/") + "/"]
+    text, code = _zenity(*command)
     return text or None if code == 0 else None
 
 
@@ -117,19 +117,19 @@ class Button:
         self.label       = label
         self.active      = active
         self.hover       = False
-        self._col_active = color_active or BTN_ACTIVE
+        self._color_active = color_active or BUTTON_ACTIVE
 
     def draw(self, surf, font):
-        col = self._col_active if self.active else (BTN_HOVER if self.hover else BTN_IDLE)
-        pygame.draw.rect(surf, col, self.rect, border_radius=7)
-        txt = font.render(self.label, True, PANEL_FG)
+        color = self._color_active if self.active else (BUTTON_HOVER if self.hover else BUTTON_IDLE)
+        pygame.draw.rect(surf, color, self.rect, border_radius=7)
+        txt = font.render(self.label, True, PANEL_FOREGROUND)
         surf.blit(txt, txt.get_rect(center=self.rect.center))
 
-    def update(self, mpos): self.hover = self.rect.collidepoint(mpos)
-    def hit(self, ev):
-        return (ev.type == pygame.MOUSEBUTTONDOWN
-                and ev.button == 1
-                and self.rect.collidepoint(ev.pos))
+    def update(self, mouse_pos): self.hover = self.rect.collidepoint(mouse_pos)
+    def hit(self, event):
+        return (event.type == pygame.MOUSEBUTTONDOWN
+                and event.button == 1
+                and self.rect.collidepoint(event.pos))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,88 +138,88 @@ class Button:
 class EditorRenderer(MapRendererBase):
     """
     Extends MapRendererBase to handle the right-side panel offset.
-    The canvas is (W - PANEL_W) wide, and coordinates are adjusted accordingly.
+    The canvas is (W - PANEL_WIDTH) wide, and coordinates are adjusted accordingly.
     """
     
     def __init__(self, screen, canvas_width, initial_ppm=DEFAULT_PPM, scale_factor=1.0):
         super().__init__(screen, initial_ppm, scale_factor)
-        self.canvas_W = canvas_width
+        self.canvas_width = canvas_width
     
-    def world_to_screen(self, wx, wy):
-        """Override to use canvas_W instead of full screen width"""
-        W, H = self.screen.get_size()
-        sx = (wx - self.cam_x) * self.ppm + self.canvas_W / 2
-        sy = -(wy - self.cam_y) * self.ppm + H / 2  # Negate Y for screen coords
-        return sx, sy
+    def world_to_screen(self, world_x, world_y):
+        """Override to use canvas_width instead of full screen width"""
+        screen_width, screen_height = self.screen.get_size()
+        screen_x = (world_x - self.camera_x) * self.ppm + self.canvas_width / 2
+        screen_y = -(world_y - self.camera_y) * self.ppm + screen_height / 2  # Negate Y for screen coords
+        return screen_x, screen_y
     
-    def screen_to_world(self, sx, sy):
-        """Override to use canvas_W instead of full screen width"""
-        W, H = self.screen.get_size()
-        wx = (sx - self.canvas_W / 2) / self.ppm + self.cam_x
-        wy = -(sy - H / 2) / self.ppm + self.cam_y  # Negate Y for world coords
-        return wx, wy
+    def screen_to_world(self, screen_x, screen_y):
+        """Override to use canvas_width instead of full screen width"""
+        screen_width, screen_height = self.screen.get_size()
+        world_x = (screen_x - self.canvas_width / 2) / self.ppm + self.camera_x
+        world_y = -(screen_y - screen_height / 2) / self.ppm + self.camera_y  # Negate Y for world coords
+        return world_x, world_y
     
     def draw_grid(self):
         """Override to clip grid to canvas area"""
-        W, H = self.screen.get_size()
+        screen_width, screen_height = self.screen.get_size()
         _, block = self._lod()
         
         # Calculate grid range - only for canvas area
-        tl_x, tl_y = self.screen_to_world(0, 0)
-        tr_x, tr_y = self.screen_to_world(self.canvas_W, 0)
-        bl_x, bl_y = self.screen_to_world(0, H)
-        br_x, br_y = self.screen_to_world(self.canvas_W, H)
+        top_left_x, top_left_y = self.screen_to_world(0, 0)
+        top_right_x, top_right_y = self.screen_to_world(self.canvas_width, 0)
+        bottom_left_x, bottom_left_y = self.screen_to_world(0, screen_height)
+        bottom_right_x, bottom_right_y = self.screen_to_world(self.canvas_width, screen_height)
         
-        x_min = min(tl_x, tr_x, bl_x, br_x)
-        x_max = max(tl_x, tr_x, bl_x, br_x)
-        y_min = min(tl_y, tr_y, bl_y, br_y)
-        y_max = max(tl_y, tr_y, bl_y, br_y)
+        x_min = min(top_left_x, top_right_x, bottom_left_x, bottom_right_x)
+        x_max = max(top_left_x, top_right_x, bottom_left_x, bottom_right_x)
+        y_min = min(top_left_y, top_right_y, bottom_left_y, bottom_right_y)
+        y_max = max(top_left_y, top_right_y, bottom_left_y, bottom_right_y)
         
         from map_renderer_base import GRID_MINOR, GRID_MAJOR, GRID_SUPER, AXIS_COLOR, SUPER_EVERY, MAJOR_EVERY
         
-        grid_size = CELL_M * block
+        grid_size = CELL_RESOLUTION * block
         start_x = math.floor(x_min / grid_size) * grid_size
         start_y = math.floor(y_min / grid_size) * grid_size
         
-        grid_line_width = self.dims.grid_line_width
+        grid_line_width = self.dimensions.grid_line_width
         
         # Vertical lines
         x = start_x
         while x <= x_max:
-            sx, _ = self.world_to_screen(x, 0)
-            cell_idx = int(round(x / CELL_M))
+            screen_x, _ = self.world_to_screen(x, 0)
+            cell_idx = int(round(x / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
             elif cell_idx % (MAJOR_EVERY * block) == 0:
                 color = GRID_MAJOR
             else:
                 color = GRID_MINOR
-            if 0 <= sx <= self.canvas_W:
-                pygame.draw.line(self.screen, color, (sx, 0), (sx, H), grid_line_width)
+            if 0 <= screen_x <= self.canvas_width:
+                pygame.draw.line(self.screen, color, (screen_x, 0), (screen_x, screen_height), grid_line_width)
             x += grid_size
         
         # Horizontal lines
         y = start_y
         while y <= y_max:
-            _, sy = self.world_to_screen(0, y)
-            cell_idx = int(round(y / CELL_M))
+            _, screen_y = self.world_to_screen(0, y)
+            cell_idx = int(round(y / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
             elif cell_idx % (MAJOR_EVERY * block) == 0:
                 color = GRID_MAJOR
             else:
                 color = GRID_MINOR
-            pygame.draw.line(self.screen, color, (0, sy), (self.canvas_W, sy), grid_line_width)
+            pygame.draw.line(self.screen, color, (0, screen_y), (self.canvas_width, screen_y), grid_line_width)
             y += grid_size
         
         # Draw axes (clipped to canvas)
         x0, _ = self.world_to_screen(0, 0)
         _, y0 = self.world_to_screen(0, 0)
-        axis_line_width = self.dims.axis_line_width
-        if 0 <= x0 <= self.canvas_W:
-            pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, H), axis_line_width)
-        if 0 <= y0 <= H:
-            pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (self.canvas_W, y0), axis_line_width)
+        axis_line_width = self.dimensions.axis_line_width
+        if 0 <= x0 <= self.canvas_width:
+            pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, screen_height), axis_line_width)
+        if 0 <= y0 <= screen_height:
+            pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (self.canvas_width, y0), axis_line_width)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,29 +233,29 @@ class MapEditor:
         
         # Apply scale factor to window size
         self.scale_factor = scale_factor
-        self.W, self.H = int(width * scale_factor), int(height * scale_factor)
-        self.canvas_W  = self.W - int(PANEL_W * scale_factor)
-        self.screen    = pygame.display.set_mode((self.W, self.H), pygame.RESIZABLE)
+        self.width, self.height = int(width * scale_factor), int(height * scale_factor)
+        self.canvas_width  = self.width - int(PANEL_WIDTH * scale_factor)
+        self.screen    = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
         pygame.display.set_caption("Map Editor  |  5 cm / cell")
 
         # Scale fonts based on DPI
-        font_size_s = max(11, int(13 * scale_factor))
-        font_size_m = max(13, int(15 * scale_factor))
-        font_size_l = max(15, int(18 * scale_factor))
+        font_size_small = max(11, int(13 * scale_factor))
+        font_size_medium = max(13, int(15 * scale_factor))
+        font_size_large = max(15, int(18 * scale_factor))
         
-        self.font_s = pygame.font.SysFont("monospace", font_size_s)
-        self.font_m = pygame.font.SysFont("monospace", font_size_m, bold=True)
-        self.font_l = pygame.font.SysFont("monospace", font_size_l, bold=True)
+        self.font_small = pygame.font.SysFont("monospace", font_size_small)
+        self.font_medium = pygame.font.SysFont("monospace", font_size_medium, bold=True)
+        self.font_large = pygame.font.SysFont("monospace", font_size_large, bold=True)
         self.clock  = pygame.time.Clock()
 
         # Initialize renderer
-        self.renderer = EditorRenderer(self.screen, self.canvas_W, DEFAULT_PPM, scale_factor)
+        self.renderer = EditorRenderer(self.screen, self.canvas_width, DEFAULT_PPM, scale_factor)
 
         self.goals: list     = []      # world metres (x, y, no_mans_land)
         self.gps_local_mode  = False   # True when gps.json uses x/y instead of lat/lon
 
         self.mode          = MODE_DRAW
-        self.brush_cells   = 1
+        self.brush_radius   = 1
         self.drawing       = False
         self.erasing       = False
         self._last_paint_pos: tuple | None = None   # for stroke interpolation
@@ -285,87 +285,86 @@ class MapEditor:
     @property
     def current_scale(self):
         """Get current UI scale (dynamic, from slider)"""
-        return self.renderer.dims.scale
+        return self.renderer.dimensions.scale
     
     def _get_ui_scale(self):
         """Get current UI scale factor for layout calculations"""
-        return self.renderer.dims.scale
+        return self.renderer.dimensions.scale
 
     # ── Coordinates ────────────────────────────────────────────────────────────
     def _update_fonts(self):
         """Recreate fonts with current scale"""
-        font_size_s = max(11, int(13 * self.renderer.dims.scale))
-        font_size_m = max(13, int(15 * self.renderer.dims.scale))
-        font_size_l = max(15, int(18 * self.renderer.dims.scale))
-        
-        self.font_s = pygame.font.SysFont("monospace", font_size_s)
-        self.font_m = pygame.font.SysFont("monospace", font_size_m, bold=True)
-        self.font_l = pygame.font.SysFont("monospace", font_size_l, bold=True)
+        font_size_small = max(11, int(13 * self.renderer.dimensions.scale))
+        font_size_medium = max(13, int(15 * self.renderer.dimensions.scale))
+        font_size_large = max(15, int(18 * self.renderer.dimensions.scale))
+
+        self.font_small = pygame.font.SysFont("monospace", font_size_small)
+        self.font_medium = pygame.font.SysFont("monospace", font_size_medium, bold=True)
+        self.font_large = pygame.font.SysFont("monospace", font_size_large, bold=True)
     
-    def world_to_base_cell(self, wx, wy):
-        """Convert world coordinates to cell indices (cx, cy)"""
-        return (int(math.floor(wx / CELL_M)),
-                int(math.floor(wy / CELL_M)))
+    def world_to_base_cell(self, world_x, world_y):
+        """Convert world coordinates to cell indices (cell_x, cell_y)"""
+        return (int(math.floor(world_x / CELL_RESOLUTION)),
+                int(math.floor(world_y / CELL_RESOLUTION)))
 
     # ── Edit operations ────────────────────────────────────────────────────────
-    def _stamp(self, sx, sy, erase=False):
-        """Stamp the brush once at screen position (sx, sy)."""
-        wx, wy = self.renderer.screen_to_world(sx, sy)
-        cx, cy = self.world_to_base_cell(wx, wy)
-        r = self.brush_cells
+    def _stamp(self, screen_x, screen_y, erase=False):
+        """Stamp the brush once at screen position (screen_x, screen_y)."""
+        world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
+        cell_x, cell_y = self.world_to_base_cell(world_x, world_y)
         target = self.renderer.lane_lines if self.mode == MODE_LANE else self.renderer.obstacles
-        for dx in range(-r, r + 1):
-            for dy in range(-r, r + 1):
-                if dx * dx + dy * dy <= r * r:
-                    key = (cx + dx, cy + dy)
+        for dx in range(-self.brush_radius, self.brush_radius + 1):
+            for dy in range(-self.brush_radius, self.brush_radius + 1):
+                if dx * dx + dy * dy <= self.brush_radius * self.brush_radius:
+                    key = (cell_x + dx, cell_y + dy)
                     if erase:
                         target.discard(key)
                     else:
                         target.add(key)
 
-    def paint(self, sx, sy, erase=False):
-        """Paint from the last position to (sx, sy), interpolating to fill gaps."""
+    def paint(self, screen_x, screen_y, erase=False):
+        """Paint from the last position to (screen_x, screen_y), interpolating to fill gaps."""
         if self._last_paint_pos is None:
-            self._stamp(sx, sy, erase)
+            self._stamp(screen_x, screen_y, erase)
         else:
             x0, y0 = self._last_paint_pos
-            dx, dy = sx - x0, sy - y0
+            dx, dy = screen_x - x0, screen_y - y0
             dist = math.hypot(dx, dy)
             # Step at most half a cell-width so no cell is ever skipped
-            step = max(1.0, CELL_M * self.renderer.ppm * 0.5)
+            step = max(1.0, CELL_RESOLUTION * self.renderer.ppm * 0.5)
             steps = max(1, int(dist / step))
             for i in range(steps + 1):
                 t = i / steps
                 self._stamp(x0 + dx * t, y0 + dy * t, erase)
-        self._last_paint_pos = (sx, sy)
+        self._last_paint_pos = (screen_x, screen_y)
 
-    def place_goal(self, sx, sy, no_mans_land=False):
-        wx, wy = self.renderer.screen_to_world(sx, sy)
-        self.goals.append((wx, wy, no_mans_land))
+    def place_goal(self, screen_x, screen_y, no_mans_land=False):
+        world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
+        self.goals.append((world_x, world_y, no_mans_land))
 
-    def remove_nearest_goal(self, sx, sy):
+    def remove_nearest_goal(self, screen_x, screen_y):
         if not self.goals: return
-        wx, wy    = self.renderer.screen_to_world(sx, sy)
+        world_x, world_y    = self.renderer.screen_to_world(screen_x, screen_y)
         threshold = 25 / self.renderer.ppm
         idx = min(range(len(self.goals)),
-                  key=lambda i: (self.goals[i][0]-wx)**2 + (self.goals[i][1]-wy)**2)
-        if math.hypot(self.goals[idx][0]-wx, self.goals[idx][1]-wy) <= threshold:
+                  key=lambda i: (self.goals[i][0]-world_x)**2 + (self.goals[i][1]-world_y)**2)
+        if math.hypot(self.goals[idx][0]-world_x, self.goals[idx][1]-world_y) <= threshold:
             self.goals.pop(idx)
 
     # ── File I/O ────────────────────────────────────────────────────────────────
-    def _goal_to_waypoint(self, gx, gy):
-        lat = DATUM_LAT + (gy / _R_EARTH) * (180.0 / math.pi)
-        lon = DATUM_LON + (gx / (_R_EARTH * math.cos(math.radians(DATUM_LAT)))) * (180.0 / math.pi)
+    def _goal_to_waypoint(self, goal_x, goal_y):
+        lat = DATUM_LATITUDE + (goal_y / EARTH_RADIUS) * (180.0 / math.pi)
+        lon = DATUM_LONGITUDE + (goal_x / (EARTH_RADIUS * math.cos(math.radians(DATUM_LATITUDE)))) * (180.0 / math.pi)
         return {"latitude": lat, "longitude": lon}
 
-    def _waypoint_to_goal(self, wp, datum=None):
-        if "x" in wp and "y" in wp:
-            return (float(wp["x"]), float(wp["y"]))
-        dlat = datum["latitude"]  if datum else DATUM_LAT
-        dlon = datum["longitude"] if datum else DATUM_LON
-        gy = (wp["latitude"]  - dlat) * (math.pi / 180.0) * _R_EARTH
-        gx = (wp["longitude"] - dlon) * (math.pi / 180.0) * _R_EARTH * math.cos(math.radians(dlat))
-        return (gx, gy)
+    def _waypoint_to_goal(self, waypoint, datum=None):
+        if "x" in waypoint and "y" in waypoint:
+            return (float(waypoint["x"]), float(waypoint["y"]))
+        datum_lat = datum["latitude"]  if datum else DATUM_LATITUDE
+        datum_lon = datum["longitude"] if datum else DATUM_LONGITUDE
+        goal_y = (waypoint["latitude"]  - datum_lat) * (math.pi / 180.0) * EARTH_RADIUS
+        goal_x = (waypoint["longitude"] - datum_lon) * (math.pi / 180.0) * EARTH_RADIUS * math.cos(math.radians(datum_lat))
+        return (goal_x, goal_y)
 
     def _load_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
@@ -381,23 +380,23 @@ class MapEditor:
         if waypoints:
             self.gps_local_mode = "x" in waypoints[0]
         self.goals = [
-            (*self._waypoint_to_goal(wp, datum), bool(wp.get("no_mans_land", False)))
-            for wp in waypoints
+            (*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)))
+            for waypoint in waypoints
         ]
 
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
         waypoints = []
-        for gx, gy, nml in self.goals:
+        for goal_x, goal_y, no_mans_land in self.goals:
             if self.gps_local_mode:
-                wp = {"x": gx, "y": gy}
+                waypoint = {"x": goal_x, "y": goal_y}
             else:
-                wp = self._goal_to_waypoint(gx, gy)
-            if nml:
-                wp["no_mans_land"] = True
-            waypoints.append(wp)
+                waypoint = self._goal_to_waypoint(goal_x, goal_y)
+            if no_mans_land:
+                waypoint["no_mans_land"] = True
+            waypoints.append(waypoint)
         data = {
-            "datum": {"latitude": DATUM_LAT, "longitude": DATUM_LON, "altitude": DATUM_ALT},
+            "datum": {"latitude": DATUM_LATITUDE, "longitude": DATUM_LONGITUDE, "altitude": DATUM_ALTITUDE},
             "waypoints": waypoints,
         }
         with open(gps_path, "w") as f:
@@ -428,9 +427,9 @@ class MapEditor:
         path = os.path.join(folder, "map.json")
         try:
             data = {
-                "resolution_m": CELL_M,
-                "obstacles":    [list(o) for o in self.renderer.obstacles],
-                "lane_lines":   [list(l) for l in self.renderer.lane_lines],
+                "resolution_m": CELL_RESOLUTION,
+                "obstacles":    [list(obstacle_cell) for obstacle_cell in self.renderer.obstacles],
+                "lane_lines":   [list(lane_line_cell) for lane_line_cell in self.renderer.lane_lines],
             }
             with open(path, "w") as f:
                 f.write(_dump_compact_arrays(data))
@@ -461,8 +460,8 @@ class MapEditor:
             _native_error("Load failed", str(e))
             return
 
-        saved_cm = float(data.get("resolution_m", CELL_M))
-        scale    = max(1, round(saved_cm / CELL_M))
+        saved_cm = float(data.get("resolution_m", CELL_RESOLUTION))
+        scale    = max(1, round(saved_cm / CELL_RESOLUTION))
 
         self.renderer.obstacles = set()
         for o in data.get("obstacles", []):
@@ -523,7 +522,7 @@ class MapEditor:
 
     # ── Rendering ───────────────────────────────────────────────────────────────
     def draw(self):
-        self.screen.fill(BG_COLOR)
+        self.screen.fill(BACKGROUND_COLOR)
         self.renderer.draw_obstacles()
         self.renderer.draw_lane_lines()
         self._draw_goals()
@@ -536,229 +535,229 @@ class MapEditor:
         pygame.display.flip()
 
     def _draw_goals(self):
-        r_px = max(7, min(26, CELL_M * 1.0 * self.renderer.ppm))
-        ri   = int(r_px)
-        for gx, gy, nml in self.goals:
-            sx, sy = self.renderer.world_to_screen(gx, gy)
-            si, sj = int(sx), int(sy)
-            if -ri <= si <= self.canvas_W + ri and -ri <= sj <= self.H + ri:
-                fill, ring = (NML_FILL, NML_RING) if nml else (GOAL_FILL, GOAL_RING)
-                pygame.draw.circle(self.screen, fill, (si, sj), ri)
-                pygame.draw.circle(self.screen, ring, (si, sj), ri, 2)
-                if nml:
-                    d = int(ri * 0.65)
+        radius_px = max(7, min(26, CELL_RESOLUTION * 1.0 * self.renderer.ppm))
+        radius_int = int(radius_px)
+        for goal_x, goal_y, no_mans_land in self.goals:
+            screen_x, screen_y = self.renderer.world_to_screen(goal_x, goal_y)
+            si, sj = int(screen_x), int(screen_y)
+            if -radius_int <= si <= self.canvas_width + radius_int and -radius_int <= sj <= self.height + radius_int:
+                fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if no_mans_land else (GOAL_FILL, GOAL_RING)
+                pygame.draw.circle(self.screen, fill, (si, sj), radius_int)
+                pygame.draw.circle(self.screen, ring, (si, sj), radius_int, 2)
+                if no_mans_land:
+                    d = int(radius_int * 0.65)
                     pygame.draw.line(self.screen, ring, (si-d, sj-d), (si+d, sj+d), 2)
                     pygame.draw.line(self.screen, ring, (si+d, sj-d), (si-d, sj+d), 2)
                 else:
-                    pygame.draw.line(self.screen, ring, (si-ri, sj), (si+ri, sj), 2)
-                    pygame.draw.line(self.screen, ring, (si, sj-ri), (si, sj+ri), 2)
+                    pygame.draw.line(self.screen, ring, (si-radius_int, sj), (si+radius_int, sj), 2)
+                    pygame.draw.line(self.screen, ring, (si, sj-radius_int), (si, sj+radius_int), 2)
 
     def _draw_brush_preview(self):
-        mx, my = pygame.mouse.get_pos()
-        if mx >= self.canvas_W: return
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        if mouse_x >= self.canvas_width: return
         if self.mode in (MODE_DRAW, MODE_LANE):
-            r_px = max(2, int((self.brush_cells + 0.5) * CELL_M * self.renderer.ppm))
+            radius_px = max(2, int((self.brush_radius + 0.5) * CELL_RESOLUTION * self.renderer.ppm))
             if self.erasing:
-                fill_col, ring_col = BRUSH_ERASE, (200, 60, 60)
+                fill_color, ring_color = BRUSH_ERASE, (200, 60, 60)
             elif self.mode == MODE_LANE:
-                fill_col, ring_col = BRUSH_LANE, (180, 145, 25)
+                fill_color, ring_color = BRUSH_LANE, (180, 145, 25)
             else:
-                fill_col, ring_col = BRUSH_DRAW, (60, 80, 200)
-            surf = pygame.Surface((r_px*2+4, r_px*2+4), pygame.SRCALPHA)
-            pygame.draw.circle(surf, fill_col, (r_px+2, r_px+2), r_px)
-            self.screen.blit(surf, (mx-r_px-2, my-r_px-2))
-            pygame.draw.circle(self.screen, ring_col, (mx, my), r_px, 1)
+                fill_color, ring_color = BRUSH_DRAW, (60, 80, 200)
+            surf = pygame.Surface((radius_px*2+4, radius_px*2+4), pygame.SRCALPHA)
+            pygame.draw.circle(surf, fill_color, (radius_px+2, radius_px+2), radius_px)
+            self.screen.blit(surf, (mouse_x-radius_px-2, mouse_y-radius_px-2))
+            pygame.draw.circle(self.screen, ring_color, (mouse_x, mouse_y), radius_px, 1)
         else:
-            ri = max(7, min(26, int(CELL_M * self.renderer.ppm)))
-            pygame.draw.circle(self.screen, GOAL_FILL, (mx, my), ri, 2)
-            pygame.draw.line(self.screen, GOAL_FILL, (mx-ri, my), (mx+ri, my), 1)
-            pygame.draw.line(self.screen, GOAL_FILL, (mx, my-ri), (mx, my+ri), 1)
+            radius_int = max(7, min(26, int(CELL_RESOLUTION * self.renderer.ppm)))
+            pygame.draw.circle(self.screen, GOAL_FILL, (mouse_x, mouse_y), radius_int, 2)
+            pygame.draw.line(self.screen, GOAL_FILL, (mouse_x-radius_int, mouse_y), (mouse_x+radius_int, mouse_y), 1)
+            pygame.draw.line(self.screen, GOAL_FILL, (mouse_x, mouse_y-radius_int), (mouse_x, mouse_y+radius_int), 1)
 
     def _draw_scale_bar(self):
         target_px  = 160
         world_span = target_px / self.renderer.ppm
         magnitude  = 10 ** math.floor(math.log10(max(world_span, 1e-9)))
         nice_vals  = [0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000]
-        world_len  = magnitude
+        world_length  = magnitude
         for v in nice_vals:
             if v * magnitude >= world_span * 0.4:
-                world_len = v * magnitude; break
-        bar_px = int(world_len * self.renderer.ppm)
-        bx, by = 18, self.H - 38
-        pygame.draw.rect(self.screen, SCALE_COL, (bx, by, bar_px, 5))
-        pygame.draw.line(self.screen, SCALE_COL, (bx, by-5), (bx, by+10), 2)
-        pygame.draw.line(self.screen, SCALE_COL, (bx+bar_px, by-5), (bx+bar_px, by+10), 2)
-        if world_len >= 1:   label = f"{world_len:.4g} m"
-        elif world_len >= 0.01: label = f"{world_len*100:.4g} cm"
-        else:                label = f"{world_len*1000:.4g} mm"
-        txt = self.font_s.render(label, True, SCALE_COL)
-        self.screen.blit(txt, (bx + bar_px//2 - txt.get_width()//2, by+12))
+                world_length = v * magnitude; break
+        bar_px = int(world_length * self.renderer.ppm)
+        bar_x, bar_y = 18, self.height - 38
+        pygame.draw.rect(self.screen, SCALE_COLOR, (bar_x, bar_y, bar_px, 5))
+        pygame.draw.line(self.screen, SCALE_COLOR, (bar_x, bar_y-5), (bar_x, bar_y+10), 2)
+        pygame.draw.line(self.screen, SCALE_COLOR, (bar_x+bar_px, bar_y-5), (bar_x+bar_px, bar_y+10), 2)
+        if world_length >= 1:   label = f"{world_length:.4g} m"
+        elif world_length >= 0.01: label = f"{world_length*100:.4g} cm"
+        else:                label = f"{world_length*1000:.4g} mm"
+        txt = self.font_small.render(label, True, SCALE_COLOR)
+        self.screen.blit(txt, (bar_x + bar_px//2 - txt.get_width()//2, bar_y+12))
 
     def _draw_coords_lod(self):
         level, block = self.renderer._lod()
-        mx, my = pygame.mouse.get_pos()
-        if mx < self.canvas_W:
-            wx, wy = self.renderer.screen_to_world(mx, my)
-            cx, cy = self.world_to_base_cell(wx, wy)
-            txt = self.font_s.render(
-                f"({wx:+.4f}, {wy:+.4f}) m   cell ({cx}, {cy})   LOD {level} ({block}x{block})",
-                True, SCALE_COL)
-            self.screen.blit(txt, (18, self.H - 60))
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        if mouse_x < self.canvas_width:
+            world_x, world_y = self.renderer.screen_to_world(mouse_x, mouse_y)
+            cell_x, cell_y = self.world_to_base_cell(world_x, world_y)
+            txt = self.font_small.render(
+                f"({world_x:+.4f}, {world_y:+.4f}) m   cell ({cell_x}, {cell_y})   LOD {level} ({block}x{block})",
+                True, SCALE_COLOR)
+            self.screen.blit(txt, (18, self.height - 60))
 
     def _draw_status(self):
         if self.status_timer > 0:
             self.status_timer -= 1
-            surf = self.font_s.render(self.status_msg, True, (80, 200, 80))
+            surf = self.font_small.render(self.status_msg, True, (80, 200, 80))
             surf.set_alpha(min(255, self.status_timer * 6))
-            self.screen.blit(surf, (18, self.H - 80))
+            self.screen.blit(surf, (18, self.height - 80))
 
     # ── Panel ───────────────────────────────────────────────────────────────────
     def _build_ui(self):
         ui_scale = self._get_ui_scale()
-        panel_w = int(PANEL_W * ui_scale)
-        px = self.canvas_W + int(10 * ui_scale)
-        bw = panel_w - int(20 * ui_scale)
-        hw = (bw - int(6 * ui_scale)) // 2  # half-width for side-by-side buttons
+        panel_width = int(PANEL_WIDTH * ui_scale)
+        panel_x = self.canvas_width + int(10 * ui_scale)
+        button_width = panel_width - int(20 * ui_scale)
+        half_width = (button_width - int(6 * ui_scale)) // 2
 
-        self.btn_draw   = Button((px,  int(48 * ui_scale), bw, int(36 * ui_scale)), "Draw Obstacles",  active=(self.mode==MODE_DRAW))
-        self.btn_lane   = Button((px,  int(90 * ui_scale), bw, int(36 * ui_scale)), "Draw Lane Lines", active=(self.mode==MODE_LANE),
+        self.button_draw   = Button((panel_x,  int(48 * ui_scale), button_width, int(36 * ui_scale)), "Draw Obstacles",  active=(self.mode==MODE_DRAW))
+        self.button_lane   = Button((panel_x,  int(90 * ui_scale), button_width, int(36 * ui_scale)), "Draw Lane Lines", active=(self.mode==MODE_LANE),
                                  color_active=(180, 145, 25))
-        self.btn_goal   = Button((px, int(132 * ui_scale), bw, int(36 * ui_scale)), "Place Goals",     active=(self.mode==MODE_GOAL))
+        self.button_goal   = Button((panel_x, int(132 * ui_scale), button_width, int(36 * ui_scale)), "Place Goals",     active=(self.mode==MODE_GOAL))
 
-        # File operations — start AFTER the info-text block (sep at 196, text 142-192)
-        self.btn_save   = Button((px, int(204 * ui_scale), bw, int(32 * ui_scale)), "Save")
-        self.btn_saveas = Button((px, int(242 * ui_scale), bw, int(32 * ui_scale)), "Save As...")
-        self.btn_load   = Button((px, int(280 * ui_scale), bw, int(32 * ui_scale)), "Load...")
+        # File operations — start AFTER the info-text block (separator at196, text 142-192)
+        self.button_save   = Button((panel_x, int(204 * ui_scale), button_width, int(32 * ui_scale)), "Save")
+        self.button_saveas = Button((panel_x, int(242 * ui_scale), button_width, int(32 * ui_scale)), "Save As...")
+        self.button_load   = Button((panel_x, int(280 * ui_scale), button_width, int(32 * ui_scale)), "Load...")
 
-        # Undo / Redo — after sep at 320, "History" micro-label at 322
-        self.btn_undo   = Button((px,                             int(338 * ui_scale), hw, int(32 * ui_scale)), "↩  Undo")
-        self.btn_redo   = Button((px + hw + int(6 * ui_scale), int(338 * ui_scale), hw, int(32 * ui_scale)), "Redo  ↪")
+        # Undo / Redo — after separator at320, "History" micro-label at 322
+        self.button_undo   = Button((panel_x,                             int(338 * ui_scale), half_width, int(32 * ui_scale)), "↩  Undo")
+        self.button_redo   = Button((panel_x + half_width + int(6 * ui_scale), int(338 * ui_scale), half_width, int(32 * ui_scale)), "Redo  ↪")
 
-        # Danger zone — after sep at 378
-        self.btn_clear  = Button((px, int(386 * ui_scale), bw, int(32 * ui_scale)), "Clear All",
+        # Danger zone — after separator at378
+        self.button_clear  = Button((panel_x, int(386 * ui_scale), button_width, int(32 * ui_scale)), "Clear All",
                                  color_active=(200, 60, 60))
 
-        self.buttons = [self.btn_draw, self.btn_lane, self.btn_goal,
-                        self.btn_save, self.btn_saveas, self.btn_load,
-                        self.btn_undo, self.btn_redo,
-                        self.btn_clear]
+        self.buttons = [self.button_draw, self.button_lane, self.button_goal,
+                        self.button_save, self.button_saveas, self.button_load,
+                        self.button_undo, self.button_redo,
+                        self.button_clear]
 
     def _draw_panel(self):
         ui_scale = self._get_ui_scale()
-        panel_w = int(PANEL_W * ui_scale)
-        mpos = pygame.mouse.get_pos()
+        panel_width = int(PANEL_WIDTH * ui_scale)
+        mouse_pos = pygame.mouse.get_pos()
         
         # Draw panel background
-        pygame.draw.rect(self.screen, PANEL_BG, (self.canvas_W, 0, panel_w, self.H))
-        pygame.draw.line(self.screen, PANEL_SEP, (self.canvas_W, 0), (self.canvas_W, self.H), 2)
+        pygame.draw.rect(self.screen, PANEL_BACKGROUND, (self.canvas_width, 0, panel_width, self.height))
+        pygame.draw.line(self.screen, PANEL_SEPARATOR, (self.canvas_width, 0), (self.canvas_width, self.height), 2)
 
         # Title (not scrolled)
-        t = self.font_l.render("MAP  EDITOR", True, PANEL_FG)
-        self.screen.blit(t, (self.canvas_W + panel_w//2 - t.get_width()//2, int(14 * ui_scale)))
+        t = self.font_large.render("MAP  EDITOR", True, PANEL_FOREGROUND)
+        self.screen.blit(t, (self.canvas_width + panel_width//2 - t.get_width()//2, int(14 * ui_scale)))
 
         # Buttons (not scrolled)
-        self.btn_draw.active = self.mode == MODE_DRAW
-        self.btn_lane.active = self.mode == MODE_LANE
-        self.btn_goal.active = self.mode == MODE_GOAL
-        for btn in self.buttons:
-            btn.update(mpos)
-            btn.draw(self.screen, self.font_s)
+        self.button_draw.active = self.mode == MODE_DRAW
+        self.button_lane.active = self.mode == MODE_LANE
+        self.button_goal.active = self.mode == MODE_GOAL
+        for button in self.buttons:
+            button.update(mouse_pos)
+            button.draw(self.screen, self.font_small)
 
         # Scrollable content starts after last button
-        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
-        scrollable_height = self.H - scrollable_start
+        scrollable_start = self.button_clear.rect.bottom + int(10 * ui_scale)
+        scrollable_height = self.height - scrollable_start
         
         # Create virtual surface for scrollable content
-        virtual_h = max(4000, self.H * 2)
-        virtual_surf = pygame.Surface((panel_w, virtual_h))
-        virtual_surf.fill(PANEL_BG)
+        virtual_h = max(4000, self.height * 2)
+        virtual_surface = pygame.Surface((panel_width, virtual_h))
+        virtual_surface.fill(PANEL_BACKGROUND)
         
-        bx_virtual = int(10 * ui_scale)
-        bx_screen = self.canvas_W + int(10 * ui_scale)
+        button_x_virtual = int(10 * ui_scale)
+        button_x_screen = self.canvas_width + int(10 * ui_scale)
         y = 0
         
         # Helper functions drawing to virtual surface
-        def sep(spacing=8):
+        def draw_separator(spacing=8):
             nonlocal y
             y += int(spacing * ui_scale)
-            pygame.draw.line(virtual_surf, PANEL_SEP,
-                           (bx_virtual, y), (panel_w - int(10 * ui_scale), y), 1)
+            pygame.draw.line(virtual_surface, PANEL_SEPARATOR,
+                           (button_x_virtual, y), (panel_width - int(10 * ui_scale), y), 1)
             y += int(4 * ui_scale)
-        
-        def lbl(text, col=PANEL_FG, spacing=0):
+
+        def lbl(text, color=PANEL_FOREGROUND, spacing=0):
             nonlocal y
             y += int(spacing * ui_scale)
-            s = self.font_s.render(text, True, col)
-            virtual_surf.blit(s, (bx_virtual, y))
-            y += s.get_height() + int(2 * ui_scale)
+            small_text = self.font_small.render(text, True, color)
+            virtual_surface.blit(small_text, (button_x_virtual, y))
+            y += small_text.get_height() + int(2 * ui_scale)
 
         # Scrollable content starts here
         y = 0
         
         # Mode/brush info
-        sep(4)
+        draw_separator(4)
         mode_label = {MODE_DRAW: "OBSTACLES", MODE_LANE: "LANE LINES", MODE_GOAL: "GOAL"}[self.mode]
         lbl(f"Mode  : {mode_label}")
         if self.mode in (MODE_DRAW, MODE_LANE):
-            diam_m = (self.brush_cells * 2 + 1) * CELL_M
-            lbl(f"Brush : r={self.brush_cells} ({diam_m:.2f} m diam)")
-            lbl("  [ / ]  to resize", PANEL_DIM)
+            diameter_m = (self.brush_radius * 2 + 1) * CELL_RESOLUTION
+            lbl(f"Brush : r={self.brush_radius} ({diameter_m:.2f} m diam)")
+            lbl("  [ / ]  to resize", PANEL_DIMMED)
 
         # Stats
-        sep(8)
-        lbl("-- Stats --", PANEL_DIM, 4)
+        draw_separator(8)
+        lbl("-- Stats --", PANEL_DIMMED, 4)
         level, block = self.renderer._lod()
         lbl(f"LOD   : {level}  ({block}x{block} cells merged)")
-        lbl(f"Display cell = {CELL_M*block*100:.4g} cm")
+        lbl(f"Display cell = {CELL_RESOLUTION*block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
         lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
-        nml_count = sum(1 for g in self.goals if g[2])
-        lbl(f"Goals     : {len(self.goals)}  ({nml_count} NML)")
+        no_mans_land_count = sum(1 for g in self.goals if g[2])
+        lbl(f"Goals     : {len(self.goals)}  ({no_mans_land_count} No Man's Land)")
         lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
-        lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)")
+        lbl(f"Base cell : {CELL_RESOLUTION*100:.0f} cm (fixed)")
 
-        sep(8)
+        draw_separator(8)
         folder = os.path.basename(os.path.dirname(self.current_file)) if self.current_file else "(unsaved)"
-        lbl(f"Folder: {folder}", PANEL_DIM)
-        gps_fmt = "local (x/y)" if self.gps_local_mode else "GPS (lat/lon)"
-        lbl(f"GPS : {gps_fmt}", PANEL_DIM)
+        lbl(f"Folder: {folder}", PANEL_DIMMED)
+        gps_format = "local (x/y)" if self.gps_local_mode else "GPS (lat/lon)"
+        lbl(f"GPS : {gps_format}", PANEL_DIMMED)
         
         # UI Scale Slider
-        sep(8)
-        display_scale = self.scale_slider_preview if self.scale_slider_preview is not None else self.renderer.dims.scale
-        lbl(f"UI Scale: {display_scale:.2f}x", PANEL_DIM)
+        draw_separator(8)
+        display_scale = self.scale_slider_preview if self.scale_slider_preview is not None else self.renderer.dimensions.scale
+        lbl(f"UI Scale: {display_scale:.2f}x", PANEL_DIMMED)
         
-        slider_w = panel_w - int(40 * ui_scale)
-        slider_x_virtual = bx_virtual + int(10 * ui_scale)
+        slider_width = panel_width - int(40 * ui_scale)
+        slider_x_virtual = button_x_virtual + int(10 * ui_scale)
         slider_y_virtual = y + int(4 * ui_scale)
-        track_h = int(4 * ui_scale)
+        track_height = int(4 * ui_scale)
         
-        pygame.draw.rect(virtual_surf, (60, 66, 85), 
-                        pygame.Rect(slider_x_virtual, slider_y_virtual, slider_w, track_h), 
+        pygame.draw.rect(virtual_surface, (60, 66, 85), 
+                        pygame.Rect(slider_x_virtual, slider_y_virtual, slider_width, track_height), 
                         border_radius=2)
         
         scale_range = 3.0 - 0.5
         normalized = (display_scale - 0.5) / scale_range
-        thumb_x = slider_x_virtual + int(normalized * slider_w)
-        thumb_y = slider_y_virtual + track_h // 2
+        thumb_x = slider_x_virtual + int(normalized * slider_width)
+        thumb_y = slider_y_virtual + track_height // 2
         thumb_radius = int(7 * ui_scale)
         
-        thumb_color = (100, 150, 255) if self.scale_slider_dragging else BTN_ACTIVE
-        pygame.draw.circle(virtual_surf, thumb_color, (thumb_x, thumb_y), thumb_radius)
-        pygame.draw.circle(virtual_surf, PANEL_FG, (thumb_x, thumb_y), thumb_radius - 2)
+        thumb_color = (100, 150, 255) if self.scale_slider_dragging else BUTTON_ACTIVE
+        pygame.draw.circle(virtual_surface, thumb_color, (thumb_x, thumb_y), thumb_radius)
+        pygame.draw.circle(virtual_surface, PANEL_FOREGROUND, (thumb_x, thumb_y), thumb_radius - 2)
         
         # Store slider rect (adjusted for scroll and screen position)
         self._slider_rect = pygame.Rect(
-            self.canvas_W + slider_x_virtual,
+            self.canvas_width + slider_x_virtual,
             scrollable_start + slider_y_virtual - self.panel_scroll_offset,
-            slider_w, thumb_radius * 2
+            slider_width, thumb_radius * 2
         )
         
         y = slider_y_virtual + int(20 * ui_scale)
 
         # Controls
-        sep(8)
-        lbl("-- Controls --", PANEL_DIM, 4)
+        draw_separator(8)
+        lbl("-- Controls --", PANEL_DIMMED, 4)
         
         controls = [
             ("LMB drag",  "Paint / Place goal"),
@@ -778,12 +777,12 @@ class MapEditor:
             ("Del",       "Clear all"),
         ]
         
-        for key, desc in controls:
-            s1 = self.font_s.render(f"{key:<10}", True, (160,185,255))
-            s2 = self.font_s.render(desc, True, PANEL_DIM)
-            virtual_surf.blit(s1, (bx_virtual, y))
-            virtual_surf.blit(s2, (bx_virtual + int(80 * ui_scale), y))
-            y += self.font_s.get_height() + int(2 * ui_scale)
+        for keybind, description in controls:
+            keybind_text_rendered = self.font_small.render(f"{keybind:<10}", True, (160,185,255))
+            desc_text_rendered = self.font_small.render(description, True, PANEL_DIMMED)
+            virtual_surface.blit(keybind_text_rendered, (button_x_virtual, y))
+            virtual_surface.blit(desc_text_rendered, (button_x_virtual + int(80 * ui_scale), y))
+            y += self.font_small.get_height() + int(2 * ui_scale)
         
         # Store content height
         self.panel_content_height = y + int(20 * ui_scale)
@@ -793,18 +792,18 @@ class MapEditor:
         self.panel_scroll_offset = max(0, min(self.panel_scroll_offset, max_scroll))
         
         # Blit scrollable portion
-        source_rect = pygame.Rect(0, self.panel_scroll_offset, panel_w, scrollable_height)
-        self.screen.blit(virtual_surf, (self.canvas_W, scrollable_start), source_rect)
+        source_rect = pygame.Rect(0, self.panel_scroll_offset, panel_width, scrollable_height)
+        self.screen.blit(virtual_surface, (self.canvas_width, scrollable_start), source_rect)
         
         # Draw scrollbar if needed
         if self.panel_content_height > scrollable_height:
-            self._draw_scrollbar(panel_w, scrollable_start, scrollable_height)
+            self._draw_scrollbar(panel_width, scrollable_start, scrollable_height)
     
-    def _draw_scrollbar(self, panel_w, start_y, height):
+    def _draw_scrollbar(self, panel_width, start_y, height):
         """Draw vertical scrollbar on panel"""
         ui_scale = self._get_ui_scale()
         scrollbar_w = int(8 * ui_scale)
-        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
+        scrollbar_x = self.canvas_width + panel_width - scrollbar_w - int(4 * ui_scale)
         
         # Track
         track_rect = pygame.Rect(scrollbar_x, start_y, scrollbar_w, height)
@@ -812,51 +811,51 @@ class MapEditor:
         
         # Thumb
         if self.panel_content_height > height:
-            thumb_h = max(int(30 * ui_scale), int(height * height / self.panel_content_height))
+            thumb_height = max(int(30 * ui_scale), int(height * height / self.panel_content_height))
             scroll_ratio = self.panel_scroll_offset / max(1, self.panel_content_height - height)
-            thumb_y = start_y + int(scroll_ratio * (height - thumb_h))
+            thumb_y = start_y + int(scroll_ratio * (height - thumb_height))
             
-            thumb_rect = pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_h)
-            pygame.draw.rect(self.screen, (BTN_ACTIVE if self._is_scrollbar_hovered() else (80, 88, 110)), 
+            thumb_rect = pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_height)
+            pygame.draw.rect(self.screen, (BUTTON_ACTIVE if self._is_scrollbar_hovered() else (80, 88, 110)), 
                            thumb_rect, border_radius=4)
     
     def _is_scrollbar_hovered(self):
         """Check if mouse is over scrollbar"""
-        mx, my = pygame.mouse.get_pos()
+        mouse_x, mouse_y = pygame.mouse.get_pos()
         ui_scale = self._get_ui_scale()
-        panel_w = int(PANEL_W * ui_scale)
+        panel_width = int(PANEL_WIDTH * ui_scale)
         scrollbar_w = int(8 * ui_scale)
-        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
-        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
+        scrollbar_x = self.canvas_width + panel_width - scrollbar_w - int(4 * ui_scale)
+        scrollable_start = self.button_clear.rect.bottom + int(10 * ui_scale)
         
-        return (scrollbar_x <= mx < scrollbar_x + scrollbar_w and 
-                scrollable_start <= my < self.H)
+        return (scrollbar_x <= mouse_x < scrollbar_x + scrollbar_w and 
+                scrollable_start <= mouse_y < self.height)
     
     def _get_scrollbar_thumb_rect(self):
         """Get scrollbar thumb rect for interaction"""
         ui_scale = self._get_ui_scale()
-        panel_w = int(PANEL_W * ui_scale)
+        panel_width = int(PANEL_WIDTH * ui_scale)
         scrollbar_w = int(8 * ui_scale)
-        scrollbar_x = self.canvas_W + panel_w - scrollbar_w - int(4 * ui_scale)
+        scrollbar_x = self.canvas_width + panel_width - scrollbar_w - int(4 * ui_scale)
         
-        scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
-        scrollable_height = self.H - scrollable_start
+        scrollable_start = self.button_clear.rect.bottom + int(10 * ui_scale)
+        scrollable_height = self.height - scrollable_start
         
         if self.panel_content_height <= scrollable_height:
             return None
         
-        thumb_h = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
+        thumb_height = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
         scroll_ratio = self.panel_scroll_offset / max(1, self.panel_content_height - scrollable_height)
-        thumb_y = scrollable_start + int(scroll_ratio * (scrollable_height - thumb_h))
+        thumb_y = scrollable_start + int(scroll_ratio * (scrollable_height - thumb_height))
         
-        return pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_h)
-    def _update_scale_from_mouse(self, mx):
+        return pygame.Rect(scrollbar_x, thumb_y, scrollbar_w, thumb_height)
+    def _update_scale_from_mouse(self, mouse_x):
         """Update scale preview based on mouse x position on slider"""
         if not hasattr(self, '_slider_rect'):
             return
         
         # Calculate new scale (0.5x to 3.0x)
-        normalized = (mx - self._slider_rect.x) / self._slider_rect.w
+        normalized = (mouse_x - self._slider_rect.x) / self._slider_rect.w
         normalized = max(0.0, min(1.0, normalized))
         new_scale = 0.5 + normalized * (3.0 - 0.5)
         
@@ -869,14 +868,14 @@ class MapEditor:
             return
         
         # Update scale and rebuild UI
-        self.renderer.dims.scale = self.scale_slider_preview
+        self.renderer.dimensions.scale = self.scale_slider_preview
         self.scale_slider_preview = None
         self._update_fonts()
         
         # Update canvas width with new scale
         ui_scale = self._get_ui_scale()
-        self.canvas_W = self.W - int(PANEL_W * ui_scale)
-        self.renderer.canvas_W = self.canvas_W
+        self.canvas_width = self.width - int(PANEL_WIDTH * ui_scale)
+        self.renderer.canvas_width = self.canvas_width
         self._build_ui()
     
     def handle_events(self):
@@ -885,17 +884,17 @@ class MapEditor:
                 return False
 
             elif event.type == pygame.VIDEORESIZE:
-                self.W, self.H = event.w, event.h
+                self.width, self.height = event.w, event.h
                 ui_scale = self._get_ui_scale()
-                self.canvas_W  = self.W - int(PANEL_W * ui_scale)
-                self.renderer.canvas_W = self.canvas_W
+                self.canvas_width  = self.width - int(PANEL_WIDTH * ui_scale)
+                self.renderer.canvas_width = self.canvas_width
                 self._build_ui()
 
             elif event.type == pygame.KEYDOWN:
                 if not self._on_key(event): return False
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.pos[0] >= self.canvas_W: self._on_panel_click(event)
+                if event.pos[0] >= self.canvas_width: self._on_panel_click(event)
                 else:                              self._on_canvas_press(event)
 
             elif event.type == pygame.MOUSEBUTTONUP:
@@ -918,12 +917,12 @@ class MapEditor:
                 if self.scrollbar_dragging:
                     # Calculate scroll based on drag
                     ui_scale = self._get_ui_scale()
-                    scrollable_start = self.btn_clear.rect.bottom + int(10 * ui_scale)
-                    scrollable_height = self.H - scrollable_start
+                    scrollable_start = self.button_clear.rect.bottom + int(10 * ui_scale)
+                    scrollable_height = self.height - scrollable_start
                     
                     dy = event.pos[1] - self.scrollbar_drag_start_y
-                    thumb_h = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
-                    scroll_range = scrollable_height - thumb_h
+                    thumb_height = max(int(30 * ui_scale), int(scrollable_height * scrollable_height / self.panel_content_height))
+                    scroll_range = scrollable_height - thumb_height
                     content_range = self.panel_content_height - scrollable_height
                     
                     if scroll_range > 0:
@@ -934,15 +933,15 @@ class MapEditor:
                     self._update_scale_from_mouse(event.pos[0])
                 elif self.renderer.panning:
                     self.renderer.update_pan(event.pos)
-                elif event.pos[0] < self.canvas_W:
+                elif event.pos[0] < self.canvas_width:
                     if   self.drawing: self.paint(event.pos[0], event.pos[1])
                     elif self.erasing: self.paint(event.pos[0], event.pos[1], erase=True)
 
             elif event.type == pygame.MOUSEWHEEL:
-                mx, my = pygame.mouse.get_pos()
-                if mx < self.canvas_W:
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if mouse_x < self.canvas_width:
                     # Zoom canvas
-                    self.renderer.zoom(event.y, mx, my)
+                    self.renderer.zoom(event.y, mouse_x, mouse_y)
                 else:
                     # Scroll panel
                     ui_scale = self._get_ui_scale()
@@ -953,29 +952,29 @@ class MapEditor:
 
     def _on_key(self, event):
         ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
-        k    = event.key
-        if k == pygame.K_z and ctrl:
+        key    = event.key
+        if key == pygame.K_z and ctrl:
             self.undo()
-        elif k == pygame.K_y and ctrl:
+        elif key == pygame.K_y and ctrl:
             self.redo()
-        elif k == pygame.K_s:
+        elif key == pygame.K_s:
             if ctrl or self.current_file is None: self.save(force_dialog=True)
             else:                                  self.save(self.current_file)
-        elif k == pygame.K_l:   self.load()
-        elif k == pygame.K_TAB:
+        elif key == pygame.K_l:   self.load()
+        elif key == pygame.K_TAB:
             if   self.mode == MODE_DRAW: self.mode = MODE_LANE
             elif self.mode == MODE_LANE: self.mode = MODE_GOAL
             else:                        self.mode = MODE_DRAW
-        elif k == pygame.K_LEFTBRACKET:  self.brush_cells = max(0, self.brush_cells - 1)
-        elif k == pygame.K_RIGHTBRACKET: self.brush_cells = min(500, self.brush_cells + 1)
-        elif k == pygame.K_r:   self.renderer.reset_view()
-        elif k in (pygame.K_DELETE, pygame.K_BACKSPACE):
+        elif key == pygame.K_LEFTBRACKET:  self.brush_radius = max(0, self.brush_radius - 1)
+        elif key == pygame.K_RIGHTBRACKET: self.brush_radius = min(500, self.brush_radius + 1)
+        elif key == pygame.K_r:   self.renderer.reset_view()
+        elif key in (pygame.K_DELETE, pygame.K_BACKSPACE):
             self._push_history()
             self.renderer.obstacles.clear()
             self.renderer.lane_lines.clear()
             self.goals.clear()
             self._status("Cleared all obstacles, lane lines, and goals.")
-        elif k == pygame.K_ESCAPE: return False
+        elif key == pygame.K_ESCAPE: return False
         return True
 
     def _on_panel_click(self, event):
@@ -996,16 +995,16 @@ class MapEditor:
             return
         
         # Then check buttons
-        if   self.btn_draw.hit(event):   self.mode = MODE_DRAW
-        elif self.btn_lane.hit(event):   self.mode = MODE_LANE
-        elif self.btn_goal.hit(event):   self.mode = MODE_GOAL
-        elif self.btn_save.hit(event):
+        if   self.button_draw.hit(event):   self.mode = MODE_DRAW
+        elif self.button_lane.hit(event):   self.mode = MODE_LANE
+        elif self.button_goal.hit(event):   self.mode = MODE_GOAL
+        elif self.button_save.hit(event):
             self.save(self.current_file if self.current_file else None)
-        elif self.btn_saveas.hit(event): self.save(force_dialog=True)
-        elif self.btn_load.hit(event):   self.load()
-        elif self.btn_undo.hit(event):   self.undo()
-        elif self.btn_redo.hit(event):   self.redo()
-        elif self.btn_clear.hit(event):
+        elif self.button_saveas.hit(event): self.save(force_dialog=True)
+        elif self.button_load.hit(event):   self.load()
+        elif self.button_undo.hit(event):   self.undo()
+        elif self.button_redo.hit(event):   self.redo()
+        elif self.button_clear.hit(event):
             self._push_history()
             self.renderer.obstacles.clear()
             self.renderer.lane_lines.clear()
@@ -1013,7 +1012,7 @@ class MapEditor:
             self._status("Cleared all obstacles, lane lines, and goals.")
 
     def _on_canvas_press(self, event):
-        mx, my = event.pos
+        mouse_x, mouse_y = event.pos
         alt_held = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
         if event.button == 2 or (event.button == 1 and alt_held):
             self.renderer.start_pan(event.pos)
@@ -1021,19 +1020,19 @@ class MapEditor:
             if   event.button == 1:
                 self._push_history()
                 self._last_paint_pos = None
-                self.drawing = True; self.paint(mx, my)
+                self.drawing = True; self.paint(mouse_x, mouse_y)
             elif event.button == 3:
                 self._push_history()
                 self._last_paint_pos = None
-                self.erasing = True; self.paint(mx, my, erase=True)
+                self.erasing = True; self.paint(mouse_x, mouse_y, erase=True)
         elif self.mode == MODE_GOAL:
             shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
             if event.button == 1:
                 self._push_history()
-                self.place_goal(mx, my, no_mans_land=shift)
+                self.place_goal(mouse_x, mouse_y, no_mans_land=shift)
             elif event.button == 3:
                 self._push_history()
-                self.remove_nearest_goal(mx, my)
+                self.remove_nearest_goal(mouse_x, mouse_y)
 
     def run(self):
         while True:
@@ -1045,9 +1044,9 @@ class MapEditor:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="5 cm/cell grid map editor")
-    p.add_argument("path", nargs="?", help="Course folder (or map.json) to open on startup")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="5 cm/cell grid map editor")
+    parser.add_argument("path", nargs="?", help="Course folder (or map.json) to open on startup")
+    args = parser.parse_args()
     editor = MapEditor()
     if args.path and (os.path.isdir(args.path) or os.path.isfile(args.path)):
         editor.load(args.path)
