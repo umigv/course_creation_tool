@@ -373,14 +373,16 @@ class MapEditor:
         lon = DATUM_LONGITUDE + (waypoint_x / (EARTH_RADIUS * math.cos(math.radians(DATUM_LATITUDE)))) * (180.0 / math.pi)
         return {"latitude": lat, "longitude": lon}
 
-    def _file_waypoint_to_coords(self, waypoint, datum=None):
-        if "x" in waypoint and "y" in waypoint:
-            return (float(waypoint["x"]), float(waypoint["y"]))
-        datum_lat = datum["latitude"]  if datum else DATUM_LATITUDE
-        datum_lon = datum["longitude"] if datum else DATUM_LONGITUDE
-        waypoint_y = (waypoint["latitude"]  - datum_lat) * (math.pi / 180.0) * EARTH_RADIUS
-        waypoint_x = (waypoint["longitude"] - datum_lon) * (math.pi / 180.0) * EARTH_RADIUS * math.cos(math.radians(datum_lat))
-        return (waypoint_x, waypoint_y)
+    def _file_waypoint_to_waypoint(self, waypoint, datum=None):
+        is_local = "x" in waypoint
+        if is_local:
+            x, y = float(waypoint["x"]), float(waypoint["y"])
+        else:
+            datum_lat = datum["latitude"]  if datum else DATUM_LATITUDE
+            datum_lon = datum["longitude"] if datum else DATUM_LONGITUDE
+            y = (waypoint["latitude"]  - datum_lat) * (math.pi / 180.0) * EARTH_RADIUS
+            x = (waypoint["longitude"] - datum_lon) * (math.pi / 180.0) * EARTH_RADIUS * math.cos(math.radians(datum_lat))
+        return Waypoint(x, y, waypoint.get("no_mans_land", False), is_local)
 
     def _load_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
@@ -394,7 +396,7 @@ class MapEditor:
         waypoints = data.get("waypoints", [])
         datum = data.get("datum")
         self.waypoints = [
-            Waypoint(*self._file_waypoint_to_coords(waypoint, datum), waypoint.get("no_mans_land", False), "x" in waypoint)
+            self._file_waypoint_to_waypoint(waypoint, datum)
             for waypoint in waypoints
         ]
 
