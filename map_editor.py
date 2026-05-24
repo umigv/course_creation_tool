@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Map Editor — draw obstacles on a grid, place goal points.
+Map Editor — draw obstacles on a grid, place waypoints.
 Requires:  pip install pygame
 
 Each grid cell is exactly 0.05 m (5 cm) and is indivisible.
@@ -10,13 +10,13 @@ so the display always shows whole cells — never sub-cell rendering.
 Controls:
   LMB drag        -> paint obstacles           (Draw mode)
   RMB drag        -> erase obstacles           (Draw mode)
-  LMB click       -> place goal               (Goal mode)
-  Shift+LMB click -> place no man's land goal (Goal mode)
-  RMB click       -> remove nearest goal      (Goal mode)
+  LMB click       -> place waypoint               (Waypoint mode)
+  Shift+LMB click -> place no man's land waypoint (Waypoint mode)
+  RMB click       -> remove nearest waypoint      (Waypoint mode)
   MMB drag        -> pan camera
   Alt+LMB drag    -> pan camera (laptop-friendly)
   Scroll wheel    -> zoom in / out
-  Tab             -> toggle Draw / Goal mode
+  Tab             -> toggle Draw / Waypoint mode
   [ / ]           -> shrink / grow brush
   Ctrl+Z          -> undo
   Ctrl+Y          -> redo
@@ -61,11 +61,11 @@ SCALE_COLOR      = ( 55,  58,  80)
 PANEL_WIDTH      = 240
 MODE_DRAW    = "draw"
 MODE_LANE    = "lane"
-MODE_GOAL    = "goal"
+MODE_GOAL    = "waypoint"
 
 
 @dataclass(frozen=True)
-class Goal:
+class Waypoint:
     x: float
     y: float
     no_mans_land: bool = False
@@ -76,7 +76,7 @@ class Goal:
 class HistoryEntry:
     obstacles: frozenset
     lane_lines: frozenset
-    goals: tuple
+    waypoints: tuple
 
 
 def _dump_compact_arrays(obj, indent=2):
@@ -267,7 +267,7 @@ class MapEditor:
         # Initialize renderer
         self.renderer = EditorRenderer(self.screen, self.canvas_width, DEFAULT_PPM, scale_factor)
 
-        self.goals: list[Goal] = []
+        self.waypoints: list[Waypoint] = []
 
         self.mode          = MODE_DRAW
         self.brush_radius   = 1
@@ -353,34 +353,34 @@ class MapEditor:
                 self._stamp(x0 + dx * t, y0 + dy * t, erase)
         self._last_paint_pos = (screen_x, screen_y)
 
-    def place_goal(self, screen_x, screen_y, no_mans_land=False):
+    def place_waypoint(self, screen_x, screen_y, no_mans_land=False):
         world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
-        is_local = bool(self.goals) and all(g.is_local for g in self.goals)
-        self.goals.append(Goal(world_x, world_y, no_mans_land, is_local))
+        is_local = bool(self.waypoints) and all(waypoint.is_local for waypoint in self.waypoints)
+        self.waypoints.append(Waypoint(world_x, world_y, no_mans_land, is_local))
 
-    def remove_nearest_goal(self, screen_x, screen_y):
-        if not self.goals: return
+    def remove_nearest_waypoint(self, screen_x, screen_y):
+        if not self.waypoints: return
         world_x, world_y    = self.renderer.screen_to_world(screen_x, screen_y)
         threshold = 25 / self.renderer.ppm
-        idx = min(range(len(self.goals)),
-                  key=lambda i: (self.goals[i].x - world_x)**2 + (self.goals[i].y - world_y)**2)
-        if math.hypot(self.goals[idx].x - world_x, self.goals[idx].y - world_y) <= threshold:
-            self.goals.pop(idx)
+        idx = min(range(len(self.waypoints)),
+                  key=lambda i: (self.waypoints[i].x - world_x)**2 + (self.waypoints[i].y - world_y)**2)
+        if math.hypot(self.waypoints[idx].x - world_x, self.waypoints[idx].y - world_y) <= threshold:
+            self.waypoints.pop(idx)
 
     # ── File I/O ────────────────────────────────────────────────────────────────
-    def _goal_to_waypoint(self, goal_x, goal_y):
-        lat = DATUM_LATITUDE + (goal_y / EARTH_RADIUS) * (180.0 / math.pi)
-        lon = DATUM_LONGITUDE + (goal_x / (EARTH_RADIUS * math.cos(math.radians(DATUM_LATITUDE)))) * (180.0 / math.pi)
+    def _gps_waypoint_to_file_gps_waypoint(self, waypoint_x, waypoint_y):
+        lat = DATUM_LATITUDE + (waypoint_y / EARTH_RADIUS) * (180.0 / math.pi)
+        lon = DATUM_LONGITUDE + (waypoint_x / (EARTH_RADIUS * math.cos(math.radians(DATUM_LATITUDE)))) * (180.0 / math.pi)
         return {"latitude": lat, "longitude": lon}
 
-    def _waypoint_to_goal(self, waypoint, datum=None):
+    def _file_waypoint_to_coords(self, waypoint, datum=None):
         if "x" in waypoint and "y" in waypoint:
             return (float(waypoint["x"]), float(waypoint["y"]))
         datum_lat = datum["latitude"]  if datum else DATUM_LATITUDE
         datum_lon = datum["longitude"] if datum else DATUM_LONGITUDE
-        goal_y = (waypoint["latitude"]  - datum_lat) * (math.pi / 180.0) * EARTH_RADIUS
-        goal_x = (waypoint["longitude"] - datum_lon) * (math.pi / 180.0) * EARTH_RADIUS * math.cos(math.radians(datum_lat))
-        return (goal_x, goal_y)
+        waypoint_y = (waypoint["latitude"]  - datum_lat) * (math.pi / 180.0) * EARTH_RADIUS
+        waypoint_x = (waypoint["longitude"] - datum_lon) * (math.pi / 180.0) * EARTH_RADIUS * math.cos(math.radians(datum_lat))
+        return (waypoint_x, waypoint_y)
 
     def _load_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
@@ -393,25 +393,25 @@ class MapEditor:
             return
         waypoints = data.get("waypoints", [])
         datum = data.get("datum")
-        self.goals = [
-            Goal(*self._waypoint_to_goal(waypoint, datum), waypoint.get("no_mans_land", False), "x" in waypoint)
+        self.waypoints = [
+            Waypoint(*self._file_waypoint_to_coords(waypoint, datum), waypoint.get("no_mans_land", False), "x" in waypoint)
             for waypoint in waypoints
         ]
 
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
-        waypoints = []
-        for goal in self.goals:
-            if goal.is_local:
-                waypoint = {"x": goal.x, "y": goal.y}
+        file_waypoints = []
+        for waypoint in self.file_waypoints:
+            if waypoint.is_local:
+                waypoint = {"x": waypoint.x, "y": waypoint.y}
             else:
-                waypoint = self._goal_to_waypoint(goal.x, goal.y)
-            if goal.no_mans_land:
+                waypoint = self._gps_waypoint_to_file_gps_waypoint(waypoint.x, waypoint.y)
+            if waypoint.no_mans_land:
                 waypoint["no_mans_land"] = True
-            waypoints.append(waypoint)
+            file_waypoints.append(waypoint)
         data = {
             "datum": {"latitude": DATUM_LATITUDE, "longitude": DATUM_LONGITUDE, "altitude": DATUM_ALTITUDE},
-            "waypoints": waypoints,
+            "waypoints": file_waypoints,
         }
         with open(gps_path, "w") as f:
             json.dump(data, f, indent=4)
@@ -502,7 +502,7 @@ class MapEditor:
     # ── Undo / redo ─────────────────────────────────────────────────────────────
     def _push_history(self):
         """Save current state onto the undo stack and clear the redo stack."""
-        entry = HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
+        entry = HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.waypoints))
         if self._undo_stack and self._undo_stack[-1] == entry:
             return  # nothing changed — don't create a duplicate entry
         self._undo_stack.append(entry)
@@ -513,10 +513,10 @@ class MapEditor:
     def _restore(self, entry: HistoryEntry):
         self.renderer.obstacles  = set(entry.obstacles)
         self.renderer.lane_lines = set(entry.lane_lines)
-        self.goals = list(entry.goals)
+        self.waypoints = list(entry.waypoints)
 
     def _current_state(self) -> HistoryEntry:
-        return HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.goals))
+        return HistoryEntry(frozenset(self.renderer.obstacles), frozenset(self.renderer.lane_lines), tuple(self.waypoints))
 
     def undo(self):
         if not self._undo_stack:
@@ -537,7 +537,7 @@ class MapEditor:
         self.screen.fill(BACKGROUND_COLOR)
         self.renderer.draw_obstacles()
         self.renderer.draw_lane_lines()
-        self._draw_goals()
+        self._draw_waypoints()
         self._draw_brush_preview()
         self.renderer.draw_grid()  # Draw grid on top
         self._draw_scale_bar()
@@ -546,17 +546,17 @@ class MapEditor:
         self._draw_panel()
         pygame.display.flip()
 
-    def _draw_goals(self):
+    def _draw_waypoints(self):
         radius_px = max(7, min(26, CELL_RESOLUTION * 1.0 * self.renderer.ppm))
         radius_int = int(radius_px)
-        for goal in self.goals:
-            screen_x, screen_y = self.renderer.world_to_screen(goal.x, goal.y)
+        for waypoint in self.waypoints:
+            screen_x, screen_y = self.renderer.world_to_screen(waypoint.x, waypoint.y)
             si, sj = int(screen_x), int(screen_y)
             if -radius_int <= si <= self.canvas_width + radius_int and -radius_int <= sj <= self.height + radius_int:
-                fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if goal.no_mans_land else (GOAL_FILL, GOAL_RING)
+                fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if waypoint.no_mans_land else (GOAL_FILL, GOAL_RING)
                 pygame.draw.circle(self.screen, fill, (si, sj), radius_int)
                 pygame.draw.circle(self.screen, ring, (si, sj), radius_int, 2)
-                if goal.no_mans_land:
+                if waypoint.no_mans_land:
                     d = int(radius_int * 0.65)
                     pygame.draw.line(self.screen, ring, (si-d, sj-d), (si+d, sj+d), 2)
                     pygame.draw.line(self.screen, ring, (si+d, sj-d), (si-d, sj+d), 2)
@@ -634,7 +634,7 @@ class MapEditor:
         self.button_draw   = Button((panel_x,  int(48 * ui_scale), button_width, int(36 * ui_scale)), "Draw Obstacles",  active=(self.mode==MODE_DRAW))
         self.button_lane   = Button((panel_x,  int(90 * ui_scale), button_width, int(36 * ui_scale)), "Draw Lane Lines", active=(self.mode==MODE_LANE),
                                  color_active=(180, 145, 25))
-        self.button_goal   = Button((panel_x, int(132 * ui_scale), button_width, int(36 * ui_scale)), "Place Goals",     active=(self.mode==MODE_GOAL))
+        self.button_waypoint   = Button((panel_x, int(132 * ui_scale), button_width, int(36 * ui_scale)), "Place Waypoints",     active=(self.mode==MODE_GOAL))
 
         # File operations — start AFTER the info-text block (separator at196, text 142-192)
         self.button_save   = Button((panel_x, int(204 * ui_scale), button_width, int(32 * ui_scale)), "Save")
@@ -649,7 +649,7 @@ class MapEditor:
         self.button_clear  = Button((panel_x, int(386 * ui_scale), button_width, int(32 * ui_scale)), "Clear All",
                                  color_active=(200, 60, 60))
 
-        self.buttons = [self.button_draw, self.button_lane, self.button_goal,
+        self.buttons = [self.button_draw, self.button_lane, self.button_waypoint,
                         self.button_save, self.button_saveas, self.button_load,
                         self.button_undo, self.button_redo,
                         self.button_clear]
@@ -670,7 +670,7 @@ class MapEditor:
         # Buttons (not scrolled)
         self.button_draw.active = self.mode == MODE_DRAW
         self.button_lane.active = self.mode == MODE_LANE
-        self.button_goal.active = self.mode == MODE_GOAL
+        self.button_waypoint.active = self.mode == MODE_GOAL
         for button in self.buttons:
             button.update(mouse_pos)
             button.draw(self.screen, self.font_small)
@@ -723,23 +723,23 @@ class MapEditor:
         lbl(f"Display cell = {CELL_RESOLUTION*block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
         lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
-        no_mans_land_count = sum(1 for g in self.goals if g.no_mans_land)
-        lbl(f"Goals     : {len(self.goals)}  ({no_mans_land_count} No Man's Land)")
+        no_mans_land_count = sum(1 for waypoint in self.waypoints if waypoint.no_mans_land)
+        lbl(f"Waypoints     : {len(self.waypoints)}  ({no_mans_land_count} No Man's Land)")
         lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
         lbl(f"Base cell : {CELL_RESOLUTION*100:.0f} cm (fixed)")
 
         draw_separator(8)
         folder = os.path.basename(os.path.dirname(self.current_file)) if self.current_file else "(unsaved)"
         lbl(f"Folder: {folder}", PANEL_DIMMED)
-        if not self.goals:
-            gps_format = "(no waypoints)"
-        elif all(g.is_local for g in self.goals):
-            gps_format = "local (x/y)"
-        elif any(g.is_local for g in self.goals):
-            gps_format = "mixed"
+        if not self.waypoints:
+            waypoint_format = "(no waypoints)"
+        elif all(waypoint.is_local for waypoint in self.waypoints):
+            waypoint_format = "local (x/y)"
+        elif any(waypoint.is_local for waypoint in self.waypoints):
+            waypoint_format = "mixed"
         else:
-            gps_format = "lat/lon"
-        lbl(f"GPS : {gps_format}", PANEL_DIMMED)
+            waypoint_format = "lat/lon"
+        lbl(f"Waypoints : {waypoint_format}", PANEL_DIMMED)
         
         # UI Scale Slider
         draw_separator(8)
@@ -779,15 +779,15 @@ class MapEditor:
         lbl("-- Controls --", PANEL_DIMMED, 4)
         
         controls = [
-            ("LMB drag",  "Paint / Place goal"),
-            ("Shift+LMB", "Place no man's land goal"),
-            ("RMB drag",  "Erase / Remove goal"),
+            ("LMB drag",  "Paint / Place waypoint"),
+            ("Shift+LMB", "Place no man's land waypoint"),
+            ("RMB drag",  "Erase / Remove waypoint"),
             ("MMB drag",  "Pan"),
             ("Alt+drag",  "Pan (laptop)"),
             ("Scroll",    "Zoom (canvas) / Scroll (panel)"),
             ("Slider",    "UI Scale"),
             ("[ / ]",     "Brush size"),
-            ("Tab",       "Cycle mode (obs/lane/goal)"),
+            ("Tab",       "Cycle mode (obs/lane/waypoint)"),
             ("Ctrl+Z/Y",  "Undo / Redo"),
             ("S",         "Save"),
             ("Ctrl+S",    "Save as..."),
@@ -991,8 +991,8 @@ class MapEditor:
             self._push_history()
             self.renderer.obstacles.clear()
             self.renderer.lane_lines.clear()
-            self.goals.clear()
-            self._status("Cleared all obstacles, lane lines, and goals.")
+            self.waypoints.clear()
+            self._status("Cleared all obstacles, lane lines, and waypoints.")
         elif key == pygame.K_ESCAPE: return False
         return True
 
@@ -1016,7 +1016,7 @@ class MapEditor:
         # Then check buttons
         if   self.button_draw.hit(event):   self.mode = MODE_DRAW
         elif self.button_lane.hit(event):   self.mode = MODE_LANE
-        elif self.button_goal.hit(event):   self.mode = MODE_GOAL
+        elif self.button_waypoint.hit(event):   self.mode = MODE_GOAL
         elif self.button_save.hit(event):
             self.save(self.current_file if self.current_file else None)
         elif self.button_saveas.hit(event): self.save(force_dialog=True)
@@ -1027,8 +1027,8 @@ class MapEditor:
             self._push_history()
             self.renderer.obstacles.clear()
             self.renderer.lane_lines.clear()
-            self.goals.clear()
-            self._status("Cleared all obstacles, lane lines, and goals.")
+            self.waypoints.clear()
+            self._status("Cleared all obstacles, lane lines, and waypoints.")
 
     def _on_canvas_press(self, event):
         mouse_x, mouse_y = event.pos
@@ -1048,10 +1048,10 @@ class MapEditor:
             shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
             if event.button == 1:
                 self._push_history()
-                self.place_goal(mouse_x, mouse_y, no_mans_land=shift)
+                self.place_waypoint(mouse_x, mouse_y, no_mans_land=shift)
             elif event.button == 3:
                 self._push_history()
-                self.remove_nearest_goal(mouse_x, mouse_y)
+                self.remove_nearest_waypoint(mouse_x, mouse_y)
 
     def run(self):
         while True:
