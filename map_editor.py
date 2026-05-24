@@ -354,6 +354,7 @@ class MapEditor:
         self.renderer = EditorRenderer(self.screen, self.canvas_W, DEFAULT_PPM, scale_factor)
 
         self.goals: list     = []      # world metres (x, y)
+        self.gps_local_mode  = False   # True when gps.json uses x/y instead of lat/lon
 
         self.mode          = MODE_DRAW
         self.brush_cells   = 1
@@ -459,11 +460,39 @@ class MapEditor:
         lon = DATUM_LON + (gx / (_R_EARTH * math.cos(math.radians(DATUM_LAT)))) * (180.0 / math.pi)
         return {"latitude": lat, "longitude": lon}
 
+    def _waypoint_to_goal(self, wp, datum=None):
+        if "x" in wp and "y" in wp:
+            return (float(wp["x"]), float(wp["y"]))
+        dlat = datum["latitude"]  if datum else DATUM_LAT
+        dlon = datum["longitude"] if datum else DATUM_LON
+        gy = (wp["latitude"]  - dlat) * (math.pi / 180.0) * _R_EARTH
+        gx = (wp["longitude"] - dlon) * (math.pi / 180.0) * _R_EARTH * math.cos(math.radians(dlat))
+        return (gx, gy)
+
+    def _load_gps_json(self, map_path):
+        gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
+        if not os.path.isfile(gps_path):
+            return
+        try:
+            with open(gps_path) as f:
+                data = json.load(f)
+        except Exception:
+            return
+        waypoints = data.get("waypoints", [])
+        datum = data.get("datum")
+        if waypoints:
+            self.gps_local_mode = "x" in waypoints[0]
+        self.goals = [self._waypoint_to_goal(wp, datum) for wp in waypoints]
+
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
+        if self.gps_local_mode:
+            waypoints = [{"x": gx, "y": gy} for gx, gy in self.goals]
+        else:
+            waypoints = [self._goal_to_waypoint(gx, gy) for gx, gy in self.goals]
         data = {
             "datum": {"latitude": DATUM_LAT, "longitude": DATUM_LON, "altitude": DATUM_ALT},
-            "waypoints": [self._goal_to_waypoint(gx, gy) for gx, gy in self.goals],
+            "waypoints": waypoints,
         }
         with open(gps_path, "w") as f:
             json.dump(data, f, indent=4)
@@ -554,6 +583,7 @@ class MapEditor:
                     self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
 
         self.goals        = [tuple(g) for g in data.get("goals", [])]
+        self._load_gps_json(path)
         self.current_file = path
         self._status(f"Loaded <- {os.path.basename(path)}")
 
@@ -787,6 +817,8 @@ class MapEditor:
         sep(8)
         fn = os.path.basename(self.current_file) if self.current_file else "(unsaved)"
         lbl(f"File: {fn}", PANEL_DIM)
+        gps_fmt = "local (x/y)" if self.gps_local_mode else "GPS (lat/lon)"
+        lbl(f"GPS : {gps_fmt}", PANEL_DIM)
         
         # UI Scale Slider
         sep(8)
