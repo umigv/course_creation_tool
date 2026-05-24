@@ -251,8 +251,7 @@ class MapEditor:
         # Initialize renderer
         self.renderer = EditorRenderer(self.screen, self.canvas_width, DEFAULT_PPM, scale_factor)
 
-        self.goals: list     = []      # world metres (x, y, no_mans_land)
-        self.gps_local_mode  = False   # True when gps.json uses x/y instead of lat/lon
+        self.goals: list     = []      # world metres (x, y, no_mans_land, is_local)
 
         self.mode          = MODE_DRAW
         self.brush_radius   = 1
@@ -340,7 +339,8 @@ class MapEditor:
 
     def place_goal(self, screen_x, screen_y, no_mans_land=False):
         world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
-        self.goals.append((world_x, world_y, no_mans_land))
+        is_local = bool(self.goals) and all(g[3] for g in self.goals)
+        self.goals.append((world_x, world_y, no_mans_land, is_local))
 
     def remove_nearest_goal(self, screen_x, screen_y):
         if not self.goals: return
@@ -377,18 +377,16 @@ class MapEditor:
             return
         waypoints = data.get("waypoints", [])
         datum = data.get("datum")
-        if waypoints:
-            self.gps_local_mode = "x" in waypoints[0]
         self.goals = [
-            (*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)))
+            (*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)), "x" in waypoint)
             for waypoint in waypoints
         ]
 
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
         waypoints = []
-        for goal_x, goal_y, no_mans_land in self.goals:
-            if self.gps_local_mode:
+        for goal_x, goal_y, no_mans_land, is_local in self.goals:
+            if is_local:
                 waypoint = {"x": goal_x, "y": goal_y}
             else:
                 waypoint = self._goal_to_waypoint(goal_x, goal_y)
@@ -477,7 +475,7 @@ class MapEditor:
                 for dy in range(scale):
                     self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
 
-        self.goals        = [tuple(g) for g in data.get("goals", [])]
+        self.goals        = [(g[0], g[1], g[2], g[3] if len(g) > 3 else False) for g in data.get("goals", [])]
         self._load_gps_json(path)
         self.current_file = path
         self._status(f"Loaded <- {os.path.basename(os.path.dirname(path))}/")
@@ -537,7 +535,7 @@ class MapEditor:
     def _draw_goals(self):
         radius_px = max(7, min(26, CELL_RESOLUTION * 1.0 * self.renderer.ppm))
         radius_int = int(radius_px)
-        for goal_x, goal_y, no_mans_land in self.goals:
+        for goal_x, goal_y, no_mans_land, *_ in self.goals:
             screen_x, screen_y = self.renderer.world_to_screen(goal_x, goal_y)
             si, sj = int(screen_x), int(screen_y)
             if -radius_int <= si <= self.canvas_width + radius_int and -radius_int <= sj <= self.height + radius_int:
@@ -719,7 +717,14 @@ class MapEditor:
         draw_separator(8)
         folder = os.path.basename(os.path.dirname(self.current_file)) if self.current_file else "(unsaved)"
         lbl(f"Folder: {folder}", PANEL_DIMMED)
-        gps_format = "local (x/y)" if self.gps_local_mode else "GPS (lat/lon)"
+        if not self.goals:
+            gps_format = "(no waypoints)"
+        elif all(g[3] for g in self.goals):
+            gps_format = "local (x/y)"
+        elif any(g[3] for g in self.goals):
+            gps_format = "mixed"
+        else:
+            gps_format = "lat/lon"
         lbl(f"GPS : {gps_format}", PANEL_DIMMED)
         
         # UI Scale Slider
