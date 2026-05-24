@@ -9,7 +9,7 @@ import pygame
 
 
 # ── Palette ───────────────────────────────────────────────────────────────────
-BG_COLOR       = (248, 248, 252)
+BACKGROUND_COLOR = (248, 248, 252)
 GRID_MINOR     = (215, 215, 230)
 GRID_MAJOR     = (165, 165, 190)
 GRID_SUPER     = (120, 120, 155)
@@ -19,7 +19,7 @@ LANE_LINE_COLOR  = (210, 170, 35)
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-CELL_M       = 0.05  # Each cell is 5cm
+CELL_RESOLUTION       = 0.05  # Each cell is 5cm
 MIN_PPM      = 0.5
 MAX_PPM      = 8000.0
 DEFAULT_PPM  = 200.0
@@ -143,7 +143,7 @@ class MapRendererBase:
         Calculate level-of-detail merging factor.
         Returns (level, block_size) where block_size is the number of cells to merge.
         """
-        pixels_per_cell = self.ppm * CELL_M
+        pixels_per_cell = self.ppm * CELL_RESOLUTION
         min_cell_px = self.dims.min_cell_px
         
         if pixels_per_cell >= min_cell_px:
@@ -153,7 +153,7 @@ class MapRendererBase:
         while pixels_per_cell < min_cell_px and block < 2048:
             block *= 2
             level += 1
-            pixels_per_cell = self.ppm * CELL_M * block
+            pixels_per_cell = self.ppm * CELL_RESOLUTION * block
         return level, block
     
     def world_to_screen(self, wx, wy):
@@ -269,7 +269,7 @@ class MapRendererBase:
         y_min = min(tl_y, tr_y, bl_y, br_y)
         y_max = max(tl_y, tr_y, bl_y, br_y)
         
-        grid_size = CELL_M * block
+        grid_size = CELL_RESOLUTION * block
         start_x = math.floor(x_min / grid_size) * grid_size
         start_y = math.floor(y_min / grid_size) * grid_size
         
@@ -279,7 +279,7 @@ class MapRendererBase:
         x = start_x
         while x <= x_max:
             sx, _ = self.world_to_screen(x, 0)
-            cell_idx = int(round(x / CELL_M))
+            cell_idx = int(round(x / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
             elif cell_idx % (MAJOR_EVERY * block) == 0:
@@ -293,7 +293,7 @@ class MapRendererBase:
         y = start_y
         while y <= y_max:
             _, sy = self.world_to_screen(0, y)
-            cell_idx = int(round(y / CELL_M))
+            cell_idx = int(round(y / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
             elif cell_idx % (MAJOR_EVERY * block) == 0:
@@ -319,9 +319,9 @@ class MapRendererBase:
             by = (cy // block) * block
             merged_cells[(bx, by)] = True
 
-        cell_screen = CELL_M * block * self.ppm
+        cell_screen = CELL_RESOLUTION * block * self.ppm
         for bx, by in merged_cells:
-            sx, sy = self.world_to_screen(bx * CELL_M, by * CELL_M)
+            sx, sy = self.world_to_screen(bx * CELL_RESOLUTION, by * CELL_RESOLUTION)
             pygame.draw.rect(self.screen, color, pygame.Rect(sx, sy, cell_screen, cell_screen))
 
     def draw_obstacles(self):
