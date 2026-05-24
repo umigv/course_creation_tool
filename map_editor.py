@@ -740,7 +740,7 @@ class MapEditor:
             waypoint_format = "mixed"
         else:
             waypoint_format = "lat/lon"
-        lbl(f"Waypoints : {waypoint_format}", PANEL_DIMMED)
+        lbl(f"Waypoints: {waypoint_format}", PANEL_DIMMED)
         
         # UI Scale Slider
         draw_separator(8)
