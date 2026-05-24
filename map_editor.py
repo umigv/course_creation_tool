@@ -355,7 +355,7 @@ class MapEditor:
 
     def place_waypoint(self, screen_x, screen_y, no_mans_land=False):
         world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
-        is_local = bool(self.waypoints) and all(waypoint.is_local for waypoint in self.waypoints)
+        is_local = len(self.waypoints) > 0 and all(waypoint.is_local for waypoint in self.waypoints)
         self.waypoints.append(Waypoint(world_x, world_y, no_mans_land, is_local))
 
     def remove_nearest_waypoint(self, screen_x, screen_y):
