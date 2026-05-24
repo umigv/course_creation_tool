@@ -68,6 +68,21 @@ MODE_LANE    = "lane"
 MODE_GOAL    = "goal"
 
 
+def _dump_compact_arrays(obj, indent=2):
+    """
+    JSON-serialize a dict with pretty-printed fields but inline arrays.
+    
+    Useful for preventing very large diffs while still maintaining readability.
+    """
+    lines = ["{"]
+    items = list(obj.items())
+    for i, (k, v) in enumerate(items):
+        comma = "," if i < len(items) - 1 else ""
+        lines.append(f'{" " * indent}{json.dumps(k)}: {json.dumps(v)}{comma}')
+    lines.append("}")
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # In-pygame file dialog
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,7 +491,7 @@ class MapEditor:
                 "lane_lines":   [list(l) for l in self.renderer.lane_lines],
             }
             with open(path, "w") as f:
-                json.dump(data, f, indent=2)
+                f.write(_dump_compact_arrays(data))
             self._save_gps_json(path)
             self.current_file = path
             self._status(f"Saved -> {os.path.basename(path)} + gps.json")
