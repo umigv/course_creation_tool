@@ -135,8 +135,8 @@ class MapRendererBase:
         self.pan_cam_orig = (0.0, 0.0)
         
         # Map layer state
-        self.obstacles  = set()
-        self.lane_lines = set()
+        self.obstacles: set[tuple[int, int]]  = set()
+        self.lane_lines: set[tuple[int, int]] = set()
     
     def _lod(self):
         """

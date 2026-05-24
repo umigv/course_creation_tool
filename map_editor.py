@@ -74,9 +74,9 @@ class Waypoint:
 
 @dataclass(frozen=True)
 class HistoryEntry:
-    obstacles: frozenset
-    lane_lines: frozenset
-    waypoints: tuple
+    obstacles: frozenset[tuple[int, int]]
+    lane_lines: frozenset[tuple[int, int]]
+    waypoints: tuple[Waypoint, ...]
 
 
 def _dump_compact_arrays(obj, indent=2):
