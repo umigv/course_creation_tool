@@ -11,6 +11,7 @@ Controls:
   LMB drag        -> paint obstacles           (Draw mode)
   RMB drag        -> erase obstacles           (Draw mode)
   LMB click       -> place goal               (Goal mode)
+  Shift+LMB click -> place no man's land goal (Goal mode)
   RMB click       -> remove nearest goal      (Goal mode)
   MMB drag        -> pan camera
   Alt+LMB drag    -> pan camera (laptop-friendly)
@@ -41,6 +42,8 @@ from dpi_utils import setup_pygame_dpi_awareness
 # ── Additional Palette for Editor ────────────────────────────────────────────
 GOAL_FILL      = (240,  65,  65)
 GOAL_RING      = (170,   0,   0)
+NML_FILL       = (180,  80, 220)
+NML_RING       = (110,  30, 160)
 PANEL_BG       = ( 32,  36,  48)
 PANEL_FG       = (218, 224, 238)
 PANEL_DIM      = (110, 118, 140)
@@ -248,7 +251,7 @@ class MapEditor:
         # Initialize renderer
         self.renderer = EditorRenderer(self.screen, self.canvas_W, DEFAULT_PPM, scale_factor)
 
-        self.goals: list     = []      # world metres (x, y)
+        self.goals: list     = []      # world metres (x, y, no_mans_land)
         self.gps_local_mode  = False   # True when gps.json uses x/y instead of lat/lon
 
         self.mode          = MODE_DRAW
@@ -336,9 +339,9 @@ class MapEditor:
                 self._stamp(x0 + dx * t, y0 + dy * t, erase)
         self._last_paint_pos = (sx, sy)
 
-    def place_goal(self, sx, sy):
+    def place_goal(self, sx, sy, no_mans_land=False):
         wx, wy = self.renderer.screen_to_world(sx, sy)
-        self.goals.append((wx, wy))
+        self.goals.append((wx, wy, no_mans_land))
 
     def remove_nearest_goal(self, sx, sy):
         if not self.goals: return
@@ -377,14 +380,22 @@ class MapEditor:
         datum = data.get("datum")
         if waypoints:
             self.gps_local_mode = "x" in waypoints[0]
-        self.goals = [self._waypoint_to_goal(wp, datum) for wp in waypoints]
+        self.goals = [
+            (*self._waypoint_to_goal(wp, datum), bool(wp.get("no_mans_land", False)))
+            for wp in waypoints
+        ]
 
     def _save_gps_json(self, map_path):
         gps_path = os.path.join(os.path.dirname(os.path.abspath(map_path)), "gps.json")
-        if self.gps_local_mode:
-            waypoints = [{"x": gx, "y": gy} for gx, gy in self.goals]
-        else:
-            waypoints = [self._goal_to_waypoint(gx, gy) for gx, gy in self.goals]
+        waypoints = []
+        for gx, gy, nml in self.goals:
+            if self.gps_local_mode:
+                wp = {"x": gx, "y": gy}
+            else:
+                wp = self._goal_to_waypoint(gx, gy)
+            if nml:
+                wp["no_mans_land"] = True
+            waypoints.append(wp)
         data = {
             "datum": {"latitude": DATUM_LAT, "longitude": DATUM_LON, "altitude": DATUM_ALT},
             "waypoints": waypoints,
@@ -527,14 +538,20 @@ class MapEditor:
     def _draw_goals(self):
         r_px = max(7, min(26, CELL_M * 1.0 * self.renderer.ppm))
         ri   = int(r_px)
-        for gx, gy in self.goals:
+        for gx, gy, nml in self.goals:
             sx, sy = self.renderer.world_to_screen(gx, gy)
             si, sj = int(sx), int(sy)
             if -ri <= si <= self.canvas_W + ri and -ri <= sj <= self.H + ri:
-                pygame.draw.circle(self.screen, GOAL_FILL, (si, sj), ri)
-                pygame.draw.circle(self.screen, GOAL_RING, (si, sj), ri, 2)
-                pygame.draw.line(self.screen, GOAL_RING, (si-ri, sj), (si+ri, sj), 2)
-                pygame.draw.line(self.screen, GOAL_RING, (si, sj-ri), (si, sj+ri), 2)
+                fill, ring = (NML_FILL, NML_RING) if nml else (GOAL_FILL, GOAL_RING)
+                pygame.draw.circle(self.screen, fill, (si, sj), ri)
+                pygame.draw.circle(self.screen, ring, (si, sj), ri, 2)
+                if nml:
+                    d = int(ri * 0.65)
+                    pygame.draw.line(self.screen, ring, (si-d, sj-d), (si+d, sj+d), 2)
+                    pygame.draw.line(self.screen, ring, (si+d, sj-d), (si-d, sj+d), 2)
+                else:
+                    pygame.draw.line(self.screen, ring, (si-ri, sj), (si+ri, sj), 2)
+                    pygame.draw.line(self.screen, ring, (si, sj-ri), (si, sj+ri), 2)
 
     def _draw_brush_preview(self):
         mx, my = pygame.mouse.get_pos()
@@ -695,7 +712,8 @@ class MapEditor:
         lbl(f"Display cell = {CELL_M*block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
         lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
-        lbl(f"Goals     : {len(self.goals)}")
+        nml_count = sum(1 for g in self.goals if g[2])
+        lbl(f"Goals     : {len(self.goals)}  ({nml_count} NML)")
         lbl(f"Zoom      : {self.renderer.ppm:.1f} px/m")
         lbl(f"Base cell : {CELL_M*100:.0f} cm (fixed)")
 
@@ -744,6 +762,7 @@ class MapEditor:
         
         controls = [
             ("LMB drag",  "Paint / Place goal"),
+            ("Shift+LMB", "Place no man's land goal"),
             ("RMB drag",  "Erase / Remove goal"),
             ("MMB drag",  "Pan"),
             ("Alt+drag",  "Pan (laptop)"),
@@ -1008,9 +1027,10 @@ class MapEditor:
                 self._last_paint_pos = None
                 self.erasing = True; self.paint(mx, my, erase=True)
         elif self.mode == MODE_GOAL:
-            if   event.button == 1:
+            shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+            if event.button == 1:
                 self._push_history()
-                self.place_goal(mx, my)
+                self.place_goal(mx, my, no_mans_land=shift)
             elif event.button == 3:
                 self._push_history()
                 self.remove_nearest_goal(mx, my)
