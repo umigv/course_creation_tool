@@ -445,8 +445,9 @@ class MapEditor:
         try:
             data = {
                 "resolution_m": CELL_RESOLUTION,
-                "obstacles":    [list(obstacle_cell) for obstacle_cell in self.renderer.obstacles],
-                "lane_lines":   [list(lane_line_cell) for lane_line_cell in self.renderer.lane_lines],
+                # Sort cells for consistent file output
+                "obstacles":    [list(obstacle_cell) for obstacle_cell in sorted(self.renderer.obstacles)],
+                "lane_lines":   [list(lane_line_cell) for lane_line_cell in sorted(self.renderer.lane_lines)],
             }
             with open(path, "w") as f:
                 f.write(_dump_compact_arrays(data))
