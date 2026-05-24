@@ -394,7 +394,7 @@ class MapEditor:
         waypoints = data.get("waypoints", [])
         datum = data.get("datum")
         self.goals = [
-            Goal(*self._waypoint_to_goal(waypoint, datum), bool(waypoint.get("no_mans_land", False)), "x" in waypoint)
+            Goal(*self._waypoint_to_goal(waypoint, datum), waypoint.get("no_mans_land", False), "x" in waypoint)
             for waypoint in waypoints
         ]
 
@@ -491,7 +491,6 @@ class MapEditor:
                 for dy in range(scale):
                     self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
 
-        self.goals        = [Goal(g[0], g[1], bool(g[2]), bool(g[3]) if len(g) > 3 else False) for g in data.get("goals", [])]
         self._load_gps_json(path)
         self.current_file = path
         self._status(f"Loaded <- {os.path.basename(os.path.dirname(path))}/")
