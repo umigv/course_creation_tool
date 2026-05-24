@@ -474,7 +474,6 @@ class MapEditor:
                 "resolution_m": CELL_M,
                 "obstacles":    [list(o) for o in self.renderer.obstacles],
                 "lane_lines":   [list(l) for l in self.renderer.lane_lines],
-                "goals":        [list(g) for g in self.goals],
             }
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)
