@@ -714,10 +714,30 @@ class MapEditor:
         draw_separator(4)
         mode_label = {MODE_DRAW: "OBSTACLES", MODE_LANE: "LANE LINES", MODE_GOAL: "GOAL"}[self.mode]
         lbl(f"Mode  : {mode_label}")
+        self._brush_preset_rects = []
         if self.mode in (MODE_DRAW, MODE_LANE):
             diameter_m = (self.brush_radius * 2 + 1) * CELL_RESOLUTION
             lbl(f"Brush : r={self.brush_radius} ({diameter_m:.2f} m diam)")
             lbl("  [ / ]  to resize", PANEL_DIMMED)
+
+            # Preset size buttons
+            btn_h = int(22 * ui_scale)
+            btn_gap = int(4 * ui_scale)
+            half_w = (panel_width - int(20 * ui_scale) - btn_gap) // 2
+            presets = [("18\" Barrel", 4), ("2ft Trash", 6)]
+            for i, (label, radius) in enumerate(presets):
+                bx = button_x_virtual + i * (half_w + btn_gap)
+                is_active = self.brush_radius == radius
+                color = BUTTON_ACTIVE if is_active else BUTTON_IDLE
+                pygame.draw.rect(virtual_surface, color, (bx, y, half_w, btn_h), border_radius=5)
+                txt = self.font_small.render(label, True, PANEL_FOREGROUND)
+                virtual_surface.blit(txt, (bx + (half_w - txt.get_width()) // 2,
+                                           y + (btn_h - txt.get_height()) // 2))
+                screen_y = scrollable_start + y - self.panel_scroll_offset
+                self._brush_preset_rects.append(
+                    (pygame.Rect(self.canvas_width + bx, screen_y, half_w, btn_h), radius)
+                )
+            y += btn_h + btn_gap
 
         # Stats
         draw_separator(8)
@@ -1010,6 +1030,13 @@ class MapEditor:
                 self.scrollbar_drag_start_scroll = self.panel_scroll_offset
             return
         
+        # Check brush preset buttons
+        if event.button == 1 and hasattr(self, '_brush_preset_rects'):
+            for rect, radius in self._brush_preset_rects:
+                if rect.collidepoint(event.pos):
+                    self.brush_radius = radius
+                    return
+
         # Check slider
         if hasattr(self, '_slider_rect') and self._slider_rect.collidepoint(event.pos):
             if event.button == 1:
