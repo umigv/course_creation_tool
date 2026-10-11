@@ -5,6 +5,8 @@ Used by both map_editor.py and map_viewer.py to ensure consistency.
 """
 
 import math
+from dataclasses import dataclass
+
 import pygame
 
 
@@ -25,6 +27,33 @@ MAX_PPM      = 8000.0
 DEFAULT_PPM  = 200.0
 MAJOR_EVERY  = 10
 SUPER_EVERY  = 100
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class Cell:
+    """Grid cell index. Ordered by x, then y."""
+    x: int
+    y: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorldPoint:
+    """Position in world coordinates (meters)."""
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenPoint:
+    """Position in screen coordinates (pixels)."""
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class LevelOfDetail:
+    level: int
+    block: int  # Number of cells merged along each axis
 
 
 class ScaledDimensions:
@@ -131,32 +160,32 @@ class MapRendererBase:
         
         # Panning state
         self.panning = False
-        self.pan_start = (0, 0)
-        self.pan_cam_orig = (0.0, 0.0)
+        self.pan_start = ScreenPoint(0, 0)
+        self.pan_cam_orig = WorldPoint(0.0, 0.0)
         
         # Map layer state
-        self.obstacles: set[tuple[int, int]]  = set()
-        self.lane_lines: set[tuple[int, int]] = set()
+        self.obstacles: set[Cell]  = set()
+        self.lane_lines: set[Cell] = set()
     
-    def _lod(self):
+    def _lod(self) -> LevelOfDetail:
         """
         Calculate level-of-detail merging factor.
-        Returns (level, block_size) where block_size is the number of cells to merge.
+        Returns the level and its block size (the number of cells to merge).
         """
         pixels_per_cell = self.ppm * CELL_RESOLUTION
         min_cell_px = self.dimensions.min_cell_px
         
         if pixels_per_cell >= min_cell_px:
-            return 0, 1
+            return LevelOfDetail(0, 1)
         level = 0
         block = 1
         while pixels_per_cell < min_cell_px and block < 2048:
             block *= 2
             level += 1
             pixels_per_cell = self.ppm * CELL_RESOLUTION * block
-        return level, block
+        return LevelOfDetail(level, block)
     
-    def world_to_screen(self, world_x, world_y):
+    def world_to_screen(self, world_x, world_y) -> ScreenPoint:
         """
         Convert world coordinates (meters) to screen pixels.
         Note: Screen Y increases downward, so we negate world Y.
@@ -165,14 +194,14 @@ class MapRendererBase:
             world_x, world_y: World coordinates in meters
             
         Returns:
-            (screen_x, screen_y): Screen coordinates in pixels
+            ScreenPoint: Screen coordinates in pixels
         """
         screen_width, screen_height = self.screen.get_size()
         screen_x = (world_x - self.camera_x) * self.ppm + screen_width / 2
         screen_y = -(world_y - self.camera_y) * self.ppm + screen_height / 2  # Negate Y for screen coords
-        return screen_x, screen_y
+        return ScreenPoint(screen_x, screen_y)
     
-    def screen_to_world(self, screen_x, screen_y):
+    def screen_to_world(self, screen_x, screen_y) -> WorldPoint:
         """
         Convert screen pixels to world coordinates (meters).
         Note: Screen Y increases downward, so we negate when converting to world.
@@ -181,12 +210,12 @@ class MapRendererBase:
             screen_x, screen_y: Screen coordinates in pixels
             
         Returns:
-            (world_x, world_y): World coordinates in meters
+            WorldPoint: World coordinates in meters
         """
         screen_width, screen_height = self.screen.get_size()
         world_x = (screen_x - screen_width / 2) / self.ppm + self.camera_x
         world_y = -(screen_y - screen_height / 2) / self.ppm + self.camera_y  # Negate Y for world coords
-        return world_x, world_y
+        return WorldPoint(world_x, world_y)
     
     def zoom(self, delta, mouse_x, mouse_y):
         """
@@ -197,7 +226,7 @@ class MapRendererBase:
             mx, my: Mouse position in screen coordinates
         """
         # Store world position under mouse before zoom
-        world_x, world_y = self.screen_to_world(mouse_x, mouse_y)
+        world = self.screen_to_world(mouse_x, mouse_y)
         
         # Apply zoom
         old_ppm = self.ppm
@@ -207,11 +236,11 @@ class MapRendererBase:
         # Adjust camera so world position stays under mouse
         if self.ppm != old_ppm:
             # After zoom, where would that world point appear on screen?
-            sx_new, sy_new = self.world_to_screen(world_x, world_y)
+            screen_new = self.world_to_screen(world.x, world.y)
             
             # Calculate how much it shifted
-            dx_screen = sx_new - mouse_x
-            dy_screen = sy_new - mouse_y
+            dx_screen = screen_new.x - mouse_x
+            dy_screen = screen_new.y - mouse_y
             
             # Adjust camera to compensate
             self.camera_x += dx_screen / self.ppm
@@ -223,30 +252,29 @@ class MapRendererBase:
         self.camera_y = 0.0
         self.ppm = DEFAULT_PPM
     
-    def start_pan(self, mouse_pos):
+    def start_pan(self, mouse_pos: ScreenPoint):
         """
         Begin panning operation.
         
         Args:
-            mouse_pos: (x, y) mouse position when panning started
+            mouse_pos: Mouse position when panning started
         """
         self.panning = True
         self.pan_start = mouse_pos
-        self.pan_cam_orig = (self.camera_x, self.camera_y)
+        self.pan_cam_orig = WorldPoint(self.camera_x, self.camera_y)
     
-    def update_pan(self, mouse_pos):
+    def update_pan(self, mouse_pos: ScreenPoint):
         """
         Update camera position during pan.
         
         Args:
-            mouse_pos: Current (x, y) mouse position
+            mouse_pos: Current mouse position
         """
         if self.panning:
-            mouse_x, mouse_y = mouse_pos
-            dx = (mouse_x - self.pan_start[0]) / self.ppm
-            dy = (mouse_y - self.pan_start[1]) / self.ppm
-            self.camera_x = self.pan_cam_orig[0] - dx
-            self.camera_y = self.pan_cam_orig[1] + dy  # + because screen Y is inverted
+            dx = (mouse_pos.x - self.pan_start.x) / self.ppm
+            dy = (mouse_pos.y - self.pan_start.y) / self.ppm
+            self.camera_x = self.pan_cam_orig.x - dx
+            self.camera_y = self.pan_cam_orig.y + dy  # + because screen Y is inverted
 
     
     def stop_pan(self):
@@ -256,18 +284,20 @@ class MapRendererBase:
     def draw_grid(self):
         """Draw coordinate grid with axes"""
         screen_width, screen_height = self.screen.get_size()
-        _, block = self._lod()
+        block = self._lod().block
         
         # Calculate grid range - get all four corners and find true min/max
-        tl_x, tl_y = self.screen_to_world(0, 0)
-        tr_x, tr_y = self.screen_to_world(screen_width, 0)
-        bl_x, bl_y = self.screen_to_world(0, screen_height)
-        br_x, br_y = self.screen_to_world(screen_width, screen_height)
+        corners = [
+            self.screen_to_world(0, 0),
+            self.screen_to_world(screen_width, 0),
+            self.screen_to_world(0, screen_height),
+            self.screen_to_world(screen_width, screen_height),
+        ]
         
-        x_min = min(tl_x, tr_x, bl_x, br_x)
-        x_max = max(tl_x, tr_x, bl_x, br_x)
-        y_min = min(tl_y, tr_y, bl_y, br_y)
-        y_max = max(tl_y, tr_y, bl_y, br_y)
+        x_min = min(corner.x for corner in corners)
+        x_max = max(corner.x for corner in corners)
+        y_min = min(corner.y for corner in corners)
+        y_max = max(corner.y for corner in corners)
         
         grid_size = CELL_RESOLUTION * block
         start_x = math.floor(x_min / grid_size) * grid_size
@@ -278,7 +308,7 @@ class MapRendererBase:
         # Vertical lines
         x = start_x
         while x <= x_max:
-            screen_x, _ = self.world_to_screen(x, 0)
+            screen_x = self.world_to_screen(x, 0).x
             cell_idx = int(round(x / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
@@ -292,7 +322,7 @@ class MapRendererBase:
         # Horizontal lines
         y = start_y
         while y <= y_max:
-            _, screen_y = self.world_to_screen(0, y)
+            screen_y = self.world_to_screen(0, y).y
             cell_idx = int(round(y / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
@@ -304,25 +334,24 @@ class MapRendererBase:
             y += grid_size
         
         # Draw axes
-        x0, _ = self.world_to_screen(0, 0)
-        _, y0 = self.world_to_screen(0, 0)
+        origin = self.world_to_screen(0, 0)
         axis_line_width = self.dimensions.axis_line_width
-        pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, screen_height), axis_line_width)
-        pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (screen_width, y0), axis_line_width)
+        pygame.draw.line(self.screen, AXIS_COLOR, (origin.x, 0), (origin.x, screen_height), axis_line_width)
+        pygame.draw.line(self.screen, AXIS_COLOR, (0, origin.y), (screen_width, origin.y), axis_line_width)
     
-    def _draw_cells(self, cells: set, color: tuple) -> None:
+    def _draw_cells(self, cells: set[Cell], color: tuple) -> None:
         """Draw a set of grid cells with LOD merging."""
-        _, block = self._lod()
+        block = self._lod().block
         merged_cells = {}
-        for cell_x, cell_y in cells:
-            block_x = (cell_x // block) * block
-            block_y = (cell_y // block) * block
-            merged_cells[(block_x, block_y)] = True
+        for cell in cells:
+            block_x = (cell.x // block) * block
+            block_y = (cell.y // block) * block
+            merged_cells[Cell(block_x, block_y)] = True
 
         cell_screen = CELL_RESOLUTION * block * self.ppm
-        for block_x, block_y in merged_cells:
-            screen_x, screen_y = self.world_to_screen(block_x * CELL_RESOLUTION, block_y * CELL_RESOLUTION)
-            pygame.draw.rect(self.screen, color, pygame.Rect(screen_x, screen_y, cell_screen, cell_screen))
+        for block_cell in merged_cells:
+            corner = self.world_to_screen(block_cell.x * CELL_RESOLUTION, block_cell.y * CELL_RESOLUTION)
+            pygame.draw.rect(self.screen, color, pygame.Rect(corner.x, corner.y, cell_screen, cell_screen))
 
     def draw_obstacles(self):
         """Draw obstacle cells with LOD merging."""

@@ -7,6 +7,14 @@ Supports Ubuntu/Linux, Windows, and macOS.
 import os
 import subprocess
 import platform
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ScaledWindowSize:
+    width: int
+    height: int
+    scale: float
 
 
 def get_system_scale_factor():
@@ -160,7 +168,7 @@ def _get_macos_scale_factor():
     return 1.0
 
 
-def apply_scale_to_window_size(width, height, scale=None):
+def apply_scale_to_window_size(width, height, scale=None) -> ScaledWindowSize:
     """
     Apply scale factor to window dimensions.
     
@@ -170,12 +178,12 @@ def apply_scale_to_window_size(width, height, scale=None):
         scale: Scale factor (None = auto-detect)
         
     Returns:
-        (scaled_width, scaled_height, scale_factor)
+        ScaledWindowSize: Scaled dimensions and the scale factor used
     """
     if scale is None:
         scale = get_system_scale_factor()
     
-    return int(width * scale), int(height * scale), scale
+    return ScaledWindowSize(int(width * scale), int(height * scale), scale)
 
 
 def setup_pygame_dpi_awareness():
@@ -213,7 +221,7 @@ if __name__ == "__main__":
     
     # Test window size calculation
     base_w, base_h = 1200, 800
-    scaled_w, scaled_h, actual_scale = apply_scale_to_window_size(base_w, base_h)
+    scaled = apply_scale_to_window_size(base_w, base_h)
     print(f"\nBase window size: {base_w}x{base_h}")
-    print(f"Scaled window size: {scaled_w}x{scaled_h}")
-    print(f"Scale factor used: {actual_scale}")
+    print(f"Scaled window size: {scaled.width}x{scaled.height}")
+    print(f"Scale factor used: {scaled.scale}")

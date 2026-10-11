@@ -36,7 +36,8 @@ DATUM_ALTITUDE = 270.0
 EARTH_RADIUS   = 6378137.0
 import pygame
 import argparse
-from map_renderer_base import MapRendererBase, BACKGROUND_COLOR, CELL_RESOLUTION, DEFAULT_PPM
+from map_renderer_base import (MapRendererBase, Cell, ScreenPoint, WorldPoint,
+                               BACKGROUND_COLOR, CELL_RESOLUTION, DEFAULT_PPM)
 from dpi_utils import setup_pygame_dpi_awareness
 
 
@@ -74,9 +75,21 @@ class Waypoint:
 
 @dataclass(frozen=True)
 class HistoryEntry:
-    obstacles: frozenset[tuple[int, int]]
-    lane_lines: frozenset[tuple[int, int]]
+    obstacles: frozenset[Cell]
+    lane_lines: frozenset[Cell]
     waypoints: tuple[Waypoint, ...]
+
+
+@dataclass(frozen=True)
+class ZenityResult:
+    output: str | None
+    returncode: int
+
+
+@dataclass(frozen=True)
+class ControlHint:
+    keybind: str
+    description: str
 
 
 def _dump_compact_arrays(obj, indent=2):
@@ -97,27 +110,27 @@ def _dump_compact_arrays(obj, indent=2):
 # ─────────────────────────────────────────────────────────────────────────────
 # Native GTK file dialogs (Ubuntu 22)
 # ─────────────────────────────────────────────────────────────────────────────
-def _zenity(*args):
+def _zenity(*args) -> ZenityResult:
     """Run zenity, pumping pygame events so X11 stays alive and zenity gets focus."""
     import pygame
     try:
         proc = subprocess.Popen(["zenity", *args],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
-        return None, -1
+        return ZenityResult(None, -1)
     while proc.poll() is None:
         pygame.event.pump()
         pygame.time.wait(30)
     stdout, _ = proc.communicate()
-    return stdout.decode().strip(), proc.returncode
+    return ZenityResult(stdout.decode().strip(), proc.returncode)
 
 
 def _native_folder_dialog(title="Select course folder", initial_dir=None):
     command = ["--file-selection", "--directory", "--title", title]
     if initial_dir and os.path.isdir(initial_dir):
         command += ["--filename", initial_dir.rstrip("/") + "/"]
-    text, code = _zenity(*command)
-    return text or None if code == 0 else None
+    result = _zenity(*command)
+    return result.output or None if result.returncode == 0 else None
 
 
 def _native_error(title, message):
@@ -161,35 +174,37 @@ class EditorRenderer(MapRendererBase):
         super().__init__(screen, initial_ppm, scale_factor)
         self.canvas_width = canvas_width
     
-    def world_to_screen(self, world_x, world_y):
+    def world_to_screen(self, world_x, world_y) -> ScreenPoint:
         """Override to use canvas_width instead of full screen width"""
         screen_width, screen_height = self.screen.get_size()
         screen_x = (world_x - self.camera_x) * self.ppm + self.canvas_width / 2
         screen_y = -(world_y - self.camera_y) * self.ppm + screen_height / 2  # Negate Y for screen coords
-        return screen_x, screen_y
+        return ScreenPoint(screen_x, screen_y)
     
-    def screen_to_world(self, screen_x, screen_y):
+    def screen_to_world(self, screen_x, screen_y) -> WorldPoint:
         """Override to use canvas_width instead of full screen width"""
         screen_width, screen_height = self.screen.get_size()
         world_x = (screen_x - self.canvas_width / 2) / self.ppm + self.camera_x
         world_y = -(screen_y - screen_height / 2) / self.ppm + self.camera_y  # Negate Y for world coords
-        return world_x, world_y
+        return WorldPoint(world_x, world_y)
     
     def draw_grid(self):
         """Override to clip grid to canvas area"""
         screen_width, screen_height = self.screen.get_size()
-        _, block = self._lod()
+        block = self._lod().block
         
         # Calculate grid range - only for canvas area
-        top_left_x, top_left_y = self.screen_to_world(0, 0)
-        top_right_x, top_right_y = self.screen_to_world(self.canvas_width, 0)
-        bottom_left_x, bottom_left_y = self.screen_to_world(0, screen_height)
-        bottom_right_x, bottom_right_y = self.screen_to_world(self.canvas_width, screen_height)
+        corners = [
+            self.screen_to_world(0, 0),
+            self.screen_to_world(self.canvas_width, 0),
+            self.screen_to_world(0, screen_height),
+            self.screen_to_world(self.canvas_width, screen_height),
+        ]
         
-        x_min = min(top_left_x, top_right_x, bottom_left_x, bottom_right_x)
-        x_max = max(top_left_x, top_right_x, bottom_left_x, bottom_right_x)
-        y_min = min(top_left_y, top_right_y, bottom_left_y, bottom_right_y)
-        y_max = max(top_left_y, top_right_y, bottom_left_y, bottom_right_y)
+        x_min = min(corner.x for corner in corners)
+        x_max = max(corner.x for corner in corners)
+        y_min = min(corner.y for corner in corners)
+        y_max = max(corner.y for corner in corners)
         
         from map_renderer_base import GRID_MINOR, GRID_MAJOR, GRID_SUPER, AXIS_COLOR, SUPER_EVERY, MAJOR_EVERY
         
@@ -202,7 +217,7 @@ class EditorRenderer(MapRendererBase):
         # Vertical lines
         x = start_x
         while x <= x_max:
-            screen_x, _ = self.world_to_screen(x, 0)
+            screen_x = self.world_to_screen(x, 0).x
             cell_idx = int(round(x / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
@@ -217,7 +232,7 @@ class EditorRenderer(MapRendererBase):
         # Horizontal lines
         y = start_y
         while y <= y_max:
-            _, screen_y = self.world_to_screen(0, y)
+            screen_y = self.world_to_screen(0, y).y
             cell_idx = int(round(y / CELL_RESOLUTION))
             if cell_idx % (SUPER_EVERY * block) == 0:
                 color = GRID_SUPER
@@ -229,13 +244,12 @@ class EditorRenderer(MapRendererBase):
             y += grid_size
         
         # Draw axes (clipped to canvas)
-        x0, _ = self.world_to_screen(0, 0)
-        _, y0 = self.world_to_screen(0, 0)
+        origin = self.world_to_screen(0, 0)
         axis_line_width = self.dimensions.axis_line_width
-        if 0 <= x0 <= self.canvas_width:
-            pygame.draw.line(self.screen, AXIS_COLOR, (x0, 0), (x0, screen_height), axis_line_width)
-        if 0 <= y0 <= screen_height:
-            pygame.draw.line(self.screen, AXIS_COLOR, (0, y0), (self.canvas_width, y0), axis_line_width)
+        if 0 <= origin.x <= self.canvas_width:
+            pygame.draw.line(self.screen, AXIS_COLOR, (origin.x, 0), (origin.x, screen_height), axis_line_width)
+        if 0 <= origin.y <= screen_height:
+            pygame.draw.line(self.screen, AXIS_COLOR, (0, origin.y), (self.canvas_width, origin.y), axis_line_width)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +287,7 @@ class MapEditor:
         self.brush_radius   = 1
         self.drawing       = False
         self.erasing       = False
-        self._last_paint_pos: tuple | None = None   # for stroke interpolation
+        self._last_paint_pos: ScreenPoint | None = None   # for stroke interpolation
         self.current_file  = None
         self.status_msg    = ""
         self.status_timer  = 0
@@ -317,21 +331,21 @@ class MapEditor:
         self.font_medium = pygame.font.SysFont("monospace", font_size_medium, bold=True)
         self.font_large = pygame.font.SysFont("monospace", font_size_large, bold=True)
     
-    def world_to_base_cell(self, world_x, world_y):
-        """Convert world coordinates to cell indices (cell_x, cell_y)"""
-        return (int(math.floor(world_x / CELL_RESOLUTION)),
-                int(math.floor(world_y / CELL_RESOLUTION)))
+    def world_to_base_cell(self, world_x, world_y) -> Cell:
+        """Convert world coordinates to the cell containing them"""
+        return Cell(int(math.floor(world_x / CELL_RESOLUTION)),
+                    int(math.floor(world_y / CELL_RESOLUTION)))
 
     # ── Edit operations ────────────────────────────────────────────────────────
     def _stamp(self, screen_x, screen_y, erase=False):
         """Stamp the brush once at screen position (screen_x, screen_y)."""
-        world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
-        cell_x, cell_y = self.world_to_base_cell(world_x, world_y)
+        world = self.renderer.screen_to_world(screen_x, screen_y)
+        cell = self.world_to_base_cell(world.x, world.y)
         target = self.renderer.lane_lines if self.mode == MODE_LANE else self.renderer.obstacles
         for dx in range(-self.brush_radius, self.brush_radius + 1):
             for dy in range(-self.brush_radius, self.brush_radius + 1):
                 if dx * dx + dy * dy <= self.brush_radius * self.brush_radius:
-                    key = (cell_x + dx, cell_y + dy)
+                    key = Cell(cell.x + dx, cell.y + dy)
                     if erase:
                         target.discard(key)
                     else:
@@ -342,7 +356,7 @@ class MapEditor:
         if self._last_paint_pos is None:
             self._stamp(screen_x, screen_y, erase)
         else:
-            x0, y0 = self._last_paint_pos
+            x0, y0 = self._last_paint_pos.x, self._last_paint_pos.y
             dx, dy = screen_x - x0, screen_y - y0
             dist = math.hypot(dx, dy)
             # Step at most half a cell-width so no cell is ever skipped
@@ -351,20 +365,20 @@ class MapEditor:
             for i in range(steps + 1):
                 t = i / steps
                 self._stamp(x0 + dx * t, y0 + dy * t, erase)
-        self._last_paint_pos = (screen_x, screen_y)
+        self._last_paint_pos = ScreenPoint(screen_x, screen_y)
 
     def place_waypoint(self, screen_x, screen_y, no_mans_land=False):
-        world_x, world_y = self.renderer.screen_to_world(screen_x, screen_y)
+        world = self.renderer.screen_to_world(screen_x, screen_y)
         is_local = len(self.waypoints) > 0 and all(waypoint.is_local for waypoint in self.waypoints)
-        self.waypoints.append(Waypoint(world_x, world_y, no_mans_land, is_local))
+        self.waypoints.append(Waypoint(world.x, world.y, no_mans_land, is_local))
 
     def remove_nearest_waypoint(self, screen_x, screen_y):
         if not self.waypoints: return
-        world_x, world_y    = self.renderer.screen_to_world(screen_x, screen_y)
+        world     = self.renderer.screen_to_world(screen_x, screen_y)
         threshold = 25 / self.renderer.ppm
         idx = min(range(len(self.waypoints)),
-                  key=lambda i: (self.waypoints[i].x - world_x)**2 + (self.waypoints[i].y - world_y)**2)
-        if math.hypot(self.waypoints[idx].x - world_x, self.waypoints[idx].y - world_y) <= threshold:
+                  key=lambda i: (self.waypoints[i].x - world.x)**2 + (self.waypoints[i].y - world.y)**2)
+        if math.hypot(self.waypoints[idx].x - world.x, self.waypoints[idx].y - world.y) <= threshold:
             self.waypoints.pop(idx)
 
     # ── File I/O ────────────────────────────────────────────────────────────────
@@ -446,8 +460,8 @@ class MapEditor:
             data = {
                 "resolution_m": CELL_RESOLUTION,
                 # Sort cells for consistent file output
-                "obstacles":    [list(obstacle_cell) for obstacle_cell in sorted(self.renderer.obstacles)],
-                "lane_lines":   [list(lane_line_cell) for lane_line_cell in sorted(self.renderer.lane_lines)],
+                "obstacles":    [[obstacle_cell.x, obstacle_cell.y] for obstacle_cell in sorted(self.renderer.obstacles)],
+                "lane_lines":   [[lane_line_cell.x, lane_line_cell.y] for lane_line_cell in sorted(self.renderer.lane_lines)],
             }
             with open(path, "w") as f:
                 f.write(_dump_compact_arrays(data))
@@ -486,14 +500,14 @@ class MapEditor:
             x0, y0 = int(o[0]), int(o[1])
             for dx in range(scale):
                 for dy in range(scale):
-                    self.renderer.obstacles.add((x0*scale + dx, y0*scale + dy))
+                    self.renderer.obstacles.add(Cell(x0*scale + dx, y0*scale + dy))
 
         self.renderer.lane_lines = set()
         for l in data.get("lane_lines", []):
             x0, y0 = int(l[0]), int(l[1])
             for dx in range(scale):
                 for dy in range(scale):
-                    self.renderer.lane_lines.add((x0*scale + dx, y0*scale + dy))
+                    self.renderer.lane_lines.add(Cell(x0*scale + dx, y0*scale + dy))
 
         self._load_gps_json(path)
         self.current_file = path
@@ -554,8 +568,8 @@ class MapEditor:
         radius_px = max(7, min(26, CELL_RESOLUTION * 1.0 * self.renderer.ppm))
         radius_int = int(radius_px)
         for waypoint in self.waypoints:
-            screen_x, screen_y = self.renderer.world_to_screen(waypoint.x, waypoint.y)
-            si, sj = int(screen_x), int(screen_y)
+            screen = self.renderer.world_to_screen(waypoint.x, waypoint.y)
+            si, sj = int(screen.x), int(screen.y)
             if -radius_int <= si <= self.canvas_width + radius_int and -radius_int <= sj <= self.height + radius_int:
                 fill, ring = (NO_MANS_LAND_FILL, NO_MANS_LAND_RING) if waypoint.no_mans_land else (GOAL_FILL, GOAL_RING)
                 pygame.draw.circle(self.screen, fill, (si, sj), radius_int)
@@ -610,13 +624,13 @@ class MapEditor:
         self.screen.blit(txt, (bar_x + bar_px//2 - txt.get_width()//2, bar_y+12))
 
     def _draw_coords_lod(self):
-        level, block = self.renderer._lod()
+        lod = self.renderer._lod()
         mouse_x, mouse_y = pygame.mouse.get_pos()
         if mouse_x < self.canvas_width:
-            world_x, world_y = self.renderer.screen_to_world(mouse_x, mouse_y)
-            cell_x, cell_y = self.world_to_base_cell(world_x, world_y)
+            world = self.renderer.screen_to_world(mouse_x, mouse_y)
+            cell = self.world_to_base_cell(world.x, world.y)
             txt = self.font_small.render(
-                f"({world_x:+.4f}, {world_y:+.4f}) m   cell ({cell_x}, {cell_y})   LOD {level} ({block}x{block})",
+                f"({world.x:+.4f}, {world.y:+.4f}) m   cell ({cell.x}, {cell.y})   LOD {lod.level} ({lod.block}x{lod.block})",
                 True, SCALE_COLOR)
             self.screen.blit(txt, (18, self.height - 60))
 
@@ -722,9 +736,9 @@ class MapEditor:
         # Stats
         draw_separator(8)
         lbl("-- Stats --", PANEL_DIMMED, 4)
-        level, block = self.renderer._lod()
-        lbl(f"LOD   : {level}  ({block}x{block} cells merged)")
-        lbl(f"Display cell = {CELL_RESOLUTION*block*100:.4g} cm")
+        lod = self.renderer._lod()
+        lbl(f"LOD   : {lod.level}  ({lod.block}x{lod.block} cells merged)")
+        lbl(f"Display cell = {CELL_RESOLUTION*lod.block*100:.4g} cm")
         lbl(f"Obstacles : {len(self.renderer.obstacles):,}")
         lbl(f"LaneLines : {len(self.renderer.lane_lines):,}")
         no_mans_land_count = sum(1 for waypoint in self.waypoints if waypoint.no_mans_land)
@@ -783,26 +797,26 @@ class MapEditor:
         lbl("-- Controls --", PANEL_DIMMED, 4)
         
         controls = [
-            ("LMB drag",  "Paint / Place waypoint"),
-            ("Shift+LMB", "Place no man's land waypoint"),
-            ("RMB drag",  "Erase / Remove waypoint"),
-            ("MMB drag",  "Pan"),
-            ("Alt+drag",  "Pan (laptop)"),
-            ("Scroll",    "Zoom (canvas) / Scroll (panel)"),
-            ("Slider",    "UI Scale"),
-            ("[ / ]",     "Brush size"),
-            ("Tab",       "Cycle mode (obs/lane/waypoint)"),
-            ("Ctrl+Z/Y",  "Undo / Redo"),
-            ("S",         "Save"),
-            ("Ctrl+S",    "Save as..."),
-            ("L",         "Load"),
-            ("R",         "Reset view"),
-            ("Del",       "Clear all"),
+            ControlHint("LMB drag",  "Paint / Place waypoint"),
+            ControlHint("Shift+LMB", "Place no man's land waypoint"),
+            ControlHint("RMB drag",  "Erase / Remove waypoint"),
+            ControlHint("MMB drag",  "Pan"),
+            ControlHint("Alt+drag",  "Pan (laptop)"),
+            ControlHint("Scroll",    "Zoom (canvas) / Scroll (panel)"),
+            ControlHint("Slider",    "UI Scale"),
+            ControlHint("[ / ]",     "Brush size"),
+            ControlHint("Tab",       "Cycle mode (obs/lane/waypoint)"),
+            ControlHint("Ctrl+Z/Y",  "Undo / Redo"),
+            ControlHint("S",         "Save"),
+            ControlHint("Ctrl+S",    "Save as..."),
+            ControlHint("L",         "Load"),
+            ControlHint("R",         "Reset view"),
+            ControlHint("Del",       "Clear all"),
         ]
         
-        for keybind, description in controls:
-            keybind_text_rendered = self.font_small.render(f"{keybind:<10}", True, (160,185,255))
-            desc_text_rendered = self.font_small.render(description, True, PANEL_DIMMED)
+        for control in controls:
+            keybind_text_rendered = self.font_small.render(f"{control.keybind:<10}", True, (160,185,255))
+            desc_text_rendered = self.font_small.render(control.description, True, PANEL_DIMMED)
             virtual_surface.blit(keybind_text_rendered, (button_x_virtual, y))
             virtual_surface.blit(desc_text_rendered, (button_x_virtual + int(80 * ui_scale), y))
             y += self.font_small.get_height() + int(2 * ui_scale)
@@ -955,7 +969,7 @@ class MapEditor:
                 elif self.scale_slider_dragging:
                     self._update_scale_from_mouse(event.pos[0])
                 elif self.renderer.panning:
-                    self.renderer.update_pan(event.pos)
+                    self.renderer.update_pan(ScreenPoint(*event.pos))
                 elif event.pos[0] < self.canvas_width:
                     if   self.drawing: self.paint(event.pos[0], event.pos[1])
                     elif self.erasing: self.paint(event.pos[0], event.pos[1], erase=True)
@@ -1038,7 +1052,7 @@ class MapEditor:
         mouse_x, mouse_y = event.pos
         alt_held = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
         if event.button == 2 or (event.button == 1 and alt_held):
-            self.renderer.start_pan(event.pos)
+            self.renderer.start_pan(ScreenPoint(*event.pos))
         elif self.mode in (MODE_DRAW, MODE_LANE):
             if   event.button == 1:
                 self._push_history()
