@@ -27,7 +27,8 @@ Controls:
   Delete          -> clear all
 """
 
-import math, json, os, sys, subprocess
+import math, json, os, subprocess, sys
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 DATUM_LATITUDE = 42.294621
@@ -81,9 +82,9 @@ class HistoryEntry:
 
 
 @dataclass(frozen=True)
-class ZenityResult:
-    output: str | None
-    returncode: int
+class DialogResult:
+    value: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,33 +109,93 @@ def _dump_compact_arrays(obj, indent=2):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Native GTK file dialogs (Ubuntu 22)
+# Native file dialogs
 # ─────────────────────────────────────────────────────────────────────────────
-def _zenity(*args) -> ZenityResult:
-    """Run zenity, pumping pygame events so X11 stays alive and zenity gets focus."""
-    import pygame
-    try:
-        proc = subprocess.Popen(["zenity", *args],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        return ZenityResult(None, -1)
-    while proc.poll() is None:
-        pygame.event.pump()
-        pygame.time.wait(30)
-    stdout, _ = proc.communicate()
-    return ZenityResult(stdout.decode().strip(), proc.returncode)
+class DialogProvider(ABC):
+    """Interface for dialog implementations used by the editor."""
+
+    @abstractmethod
+    def select_folder(self, title, initial_dir) -> DialogResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def show_error(self, title, message) -> DialogResult:
+        raise NotImplementedError
+
+
+class TkDialogs(DialogProvider):
+    """Cross-platform dialogs using Tkinter in an isolated process.
+
+    SDL and Tk both try to own the macOS application object when they run in
+    the same process.  Keeping Tk in a short-lived helper avoids that conflict
+    while retaining the standard-library implementation on every platform.
+    """
+
+    def select_folder(self, title, initial_dir) -> DialogResult:
+        arguments = ["folder", "--title", title]
+        if initial_dir:
+            arguments.extend(("--initial-dir", initial_dir))
+        result = self._run(*arguments)
+        if result.error or not result.value:
+            return result
+
+        try:
+            folder = json.loads(result.value)
+        except json.JSONDecodeError:
+            return DialogResult(error="The dialog helper returned invalid output.")
+        if folder is not None and not isinstance(folder, str):
+            return DialogResult(error="The dialog helper returned an invalid folder.")
+        return DialogResult(value=folder or None)
+
+    def show_error(self, title, message) -> DialogResult:
+        return self._run("error", "--title", title, "--message", message)
+
+    @staticmethod
+    def _run(*arguments) -> DialogResult:
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "dialog_helper.py")
+        try:
+            process = subprocess.Popen(
+                [sys.executable, helper, *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as error:
+            return DialogResult(error=str(error))
+
+        while process.poll() is None:
+            pygame.event.pump()
+            pygame.time.wait(30)
+
+        stdout, stderr = process.communicate()
+        if process.returncode:
+            detail = stderr.strip() or f"helper exited with status {process.returncode}"
+            return DialogResult(error=detail)
+        return DialogResult(value=stdout.strip() or None)
+
+
+_DIALOGS: DialogProvider = TkDialogs()
 
 
 def _native_folder_dialog(title="Select course folder", initial_dir=None):
-    command = ["--file-selection", "--directory", "--title", title]
-    if initial_dir and os.path.isdir(initial_dir):
-        command += ["--filename", initial_dir.rstrip("/") + "/"]
-    result = _zenity(*command)
-    return result.output or None if result.returncode == 0 else None
+    initial_dir = initial_dir if initial_dir and os.path.isdir(initial_dir) else None
+    result = _DIALOGS.select_folder(title, initial_dir)
+
+    if result.error:
+        print(f"Folder dialog unavailable: {result.error}", file=sys.stderr)
+        return None
+    if not result.value:
+        return None
+    return os.path.normpath(result.value)
 
 
 def _native_error(title, message):
-    _zenity("--error", "--no-wrap", "--title", title, "--text", message)
+    result = _DIALOGS.show_error(title, message)
+    if result.error:
+        print(f"{title}: {message} ({result.error})", file=sys.stderr)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -261,11 +322,14 @@ class MapEditor:
         scale_factor = setup_pygame_dpi_awareness()
         pygame.init()
         
-        # Apply scale factor to window size
+        # Apply scale factor to window size. SDL already works in logical
+        # points on macOS, so dpi_utils deliberately returns 1.0 there.
         self.scale_factor = scale_factor
         self.width, self.height = int(width * scale_factor), int(height * scale_factor)
-        self.canvas_width  = self.width - int(PANEL_WIDTH * scale_factor)
         self.screen    = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
+        # The window manager may constrain the requested dimensions.
+        self.width, self.height = self.screen.get_size()
+        self.canvas_width  = self.width - int(PANEL_WIDTH * scale_factor)
         pygame.display.set_caption("Map Editor  |  5 cm / cell")
 
         # Scale fonts based on DPI

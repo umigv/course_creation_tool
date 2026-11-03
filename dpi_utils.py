@@ -140,31 +140,12 @@ def _get_windows_scale_factor():
 
 
 def _get_macos_scale_factor():
-    """Get scale factor on macOS"""
-    try:
-        # Try to get scaling from system_profiler
-        result = subprocess.run(
-            ['system_profiler', 'SPDisplaysDataType'],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        if result.returncode == 0:
-            # Look for "Retina" or "Resolution" in output
-            if 'Retina' in result.stdout:
-                return 2.0
-    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
-        pass
-    
-    # Try using AppKit if available
-    try:
-        from AppKit import NSScreen
-        main_screen = NSScreen.mainScreen()
-        if main_screen:
-            return main_screen.backingScaleFactor()
-    except ImportError:
-        pass
-    
+    """Return SDL's logical-coordinate scale on macOS.
+
+    SDL already maps logical window coordinates to Retina backing pixels.
+    Multiplying the requested window size by the backing scale asks macOS for
+    an oversized window and causes the OS to forcibly resize it.
+    """
     return 1.0
 
 
